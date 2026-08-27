@@ -12,7 +12,9 @@ func gateExecution(binaryName string) error {
 		return fmt.Errorf("loading local plugin config: %w", err)
 	}
 	if len(cfg.Plugins.Allowed) == 0 {
-		return fmt.Errorf("plugin %q blocked: no plugins.allowed list in local config (%s); add it to run plugins", binaryName, localConfigHint())
+		return fmt.Errorf("plugin %q blocked: no plugins.allowed list in local config (%s)\n"+
+			"create that file with:\n  plugins:\n    allowed:\n      - %s\n"+
+			"(only the local file grants execution; the repo .sops.yaml cannot)", binaryName, localConfigHint(), binaryName)
 	}
 	for _, a := range cfg.Plugins.Allowed {
 		if a == binaryName {
