@@ -2,18 +2,16 @@ package keyservice
 
 import (
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"sync"
 	"testing"
 
 	"golang.org/x/net/context"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/getsops/sops/v3/internal/testutil"
 )
 
 func TestKmsKeyToMasterKey(t *testing.T) {
@@ -90,38 +88,10 @@ func TestKmsKeyToMasterKey(t *testing.T) {
 	}
 }
 
-// plugin package test helpers are unexported; keyservice needs its own copy
-var (
-	keyserviceTestPluginOnce sync.Once
-	keyserviceTestPluginPath string
-	keyserviceTestPluginErr  error
-)
-
+// thin wrapper: the build logic lives in internal/testutil
 func buildTestPlugin(t *testing.T) string {
 	t.Helper()
-	keyserviceTestPluginOnce.Do(func() {
-		// no cleanup: the binary must outlive every test in the package run
-		dir, err := os.MkdirTemp("", "sops-keyservice-testplugin")
-		if err != nil {
-			keyserviceTestPluginErr = err
-			return
-		}
-		bin := filepath.Join(dir, "sops-plugin-testplugin")
-		if runtime.GOOS == "windows" {
-			bin += ".exe" // plugin resolution accepts .exe only on windows
-		}
-		cmd := exec.Command("go", "build", "-o", bin, "../internal/testplugin")
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			keyserviceTestPluginErr = fmt.Errorf("%v (go build -o %s ../internal/testplugin)", err, bin)
-			return
-		}
-		keyserviceTestPluginPath = bin
-	})
-	if keyserviceTestPluginErr != nil {
-		t.Fatalf("building testplugin: %v", keyserviceTestPluginErr)
-	}
-	return keyserviceTestPluginPath
+	return testutil.BuildTestPlugin(t)
 }
 
 func TestPluginKeyGatedByDefault(t *testing.T) {

@@ -805,45 +805,41 @@ func (m *Metadata) UpdateMasterKeysWithKeyServices(dataKey []byte, svcs []keyser
 			}
 		}
 		for _, key := range group {
+			pk, isPlugin := key.(*plugin.MasterKey)
+			svcKey := keyservice.KeyFromMasterKey(key)
 			var keyErrs []error
 			encrypted := false
-			// A plugin key learns its identity (key_ref, plugin_version) from
-			// the wrap itself, and that answer cannot cross the keyservice
-			// wire: prefer a local client's in-process wrap on the caller's
-			// own key object so metadata records what the plugin answered.
-			if pk, ok := key.(*plugin.MasterKey); ok {
-				for _, svc := range svcs {
-					lc, ok := svc.(keyservice.LocalClient)
-					if !ok {
-						continue
-					}
-					handled, err := lc.EncryptMasterKey(pk, part)
-					if err != nil {
-						keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
-						continue
-					}
-					if handled {
+			for _, svc := range svcs {
+				// A plugin key learns its identity (key_ref, plugin_version)
+				// from the wrap itself, and that answer cannot cross the
+				// keyservice wire: a local service wraps it in-process on the
+				// caller's own key object so metadata records what the plugin
+				// answered. Other (remote) services keep the wire call.
+				if isPlugin {
+					if lc, isLocal := svc.(keyservice.LocalClient); isLocal {
+						if err := lc.EncryptMasterKey(pk, part); err != nil {
+							keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
+							continue
+						}
+						// EncryptMasterKey wraps in-process: the key already
+						// carries its wrapped value
 						encrypted = true
+						// Only need to encrypt the key successfully with one service
 						break
 					}
 				}
-			}
-			if !encrypted {
-				svcKey := keyservice.KeyFromMasterKey(key)
-				for _, svc := range svcs {
-					rsp, err := svc.Encrypt(context.Background(), &keyservice.EncryptRequest{
-						Key:       &svcKey,
-						Plaintext: part,
-					})
-					if err != nil {
-						keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
-						continue
-					}
-					key.SetEncryptedDataKey(rsp.Ciphertext)
-					encrypted = true
-					// Only need to encrypt the key successfully with one service
-					break
+				rsp, err := svc.Encrypt(context.Background(), &keyservice.EncryptRequest{
+					Key:       &svcKey,
+					Plaintext: part,
+				})
+				if err != nil {
+					keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
+					continue
 				}
+				key.SetEncryptedDataKey(rsp.Ciphertext)
+				encrypted = true
+				// Only need to encrypt the key successfully with one service
+				break
 			}
 			if !encrypted {
 				errs = append(errs, keyErrs...)
@@ -954,30 +950,11 @@ func sortKeyGroupIndices(group KeyGroup, decryptionOrder []string) []int {
 // decryptKey tries to decrypt the contents of the provided MasterKey with any
 // of the key services, returning as soon as one key service succeeds.
 func decryptKey(key keys.MasterKey, svcs []keyservice.KeyServiceClient) ([]byte, error) {
+	pk, isPlugin := key.(*plugin.MasterKey)
 	svcKey := keyservice.KeyFromMasterKey(key)
 	var part []byte
 	decryptErr := decryptKeyError{
 		keyName: key.ToString(),
-	}
-	// plugin keys decrypt in-process on the local client (encrypt symmetric:
-	// the key's identity never crosses the keyservice wire)
-	if pk, ok := key.(*plugin.MasterKey); ok {
-		for _, svc := range svcs {
-			lc, ok := svc.(keyservice.LocalClient)
-			if !ok {
-				continue
-			}
-			handled, plaintext, err := lc.DecryptMasterKey(pk)
-			if !handled {
-				continue
-			}
-			if err != nil {
-				decryptErr.errs = append(decryptErr.errs, err)
-			} else {
-				part = plaintext
-			}
-			break
-		}
 	}
 	for _, svc := range svcs {
 		// All keys in a key group encrypt the same part, so as soon
@@ -985,6 +962,16 @@ func decryptKey(key keys.MasterKey, svcs []keyservice.KeyServiceClient) ([]byte,
 		// proceed with the next group
 		var err error
 		if part == nil {
+			// plugin keys decrypt in-process on the local service (encrypt
+			// symmetric: the key's identity never crosses the wire); other
+			// services keep the wire call
+			if isPlugin {
+				if lc, isLocal := svc.(keyservice.LocalClient); isLocal {
+					part, err = lc.DecryptMasterKey(pk)
+					decryptErr.errs = append(decryptErr.errs, err)
+					continue
+				}
+			}
 			var rsp *keyservice.DecryptResponse
 			rsp, err = svc.Decrypt(
 				context.Background(),

@@ -6,12 +6,8 @@ package plugin_test
 
 import (
 	"crypto/rand"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,6 +17,7 @@ import (
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/aes"
 	"github.com/getsops/sops/v3/age"
+	"github.com/getsops/sops/v3/internal/testutil"
 	"github.com/getsops/sops/v3/keyservice"
 	"github.com/getsops/sops/v3/plugin"
 	iniStore "github.com/getsops/sops/v3/stores/ini"
@@ -28,45 +25,11 @@ import (
 	yamlStore "github.com/getsops/sops/v3/stores/yaml"
 )
 
-var (
-	e2ePluginOnce sync.Once
-	e2ePluginPath string
-	e2ePluginErr  error
-)
-
-// same contract as the plugin package's buildTestPlugin: the binary must
-// outlive every test in the run, so no cleanup
-func buildE2ETestPlugin(t *testing.T) string {
-	t.Helper()
-	e2ePluginOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "sops-plugin-e2e")
-		if err != nil {
-			e2ePluginErr = err
-			return
-		}
-		bin := filepath.Join(dir, "sops-plugin-testplugin")
-		if runtime.GOOS == "windows" {
-			bin += ".exe"
-		}
-		cmd := exec.Command("go", "build", "-o", bin, "../internal/testplugin")
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			e2ePluginErr = fmt.Errorf("%v (go build -o %s ../internal/testplugin)", err, bin)
-			return
-		}
-		e2ePluginPath = bin
-	})
-	if e2ePluginErr != nil {
-		t.Fatalf("building testplugin: %v", e2ePluginErr)
-	}
-	return e2ePluginPath
-}
-
 // composes the standard harness: plugin on PATH, healthy mode, local config
 // allowlist. Keys built after this resolve through PATH like production.
 func e2eSetup(t *testing.T) {
 	t.Helper()
-	bin := buildE2ETestPlugin(t)
+	bin := testutil.BuildTestPlugin(t)
 	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
 	cfgPath := filepath.Join(t.TempDir(), "local.yaml")
@@ -156,12 +119,7 @@ func TestE2EStoreRoundTrip(t *testing.T) {
 			dataKey := randomDataKey(t)
 			plain := e2ePlainBranch()
 			tree := sops.Tree{
-				Branches: sops.TreeBranches{
-					{
-						{Key: "username", Value: "admin"},
-						{Key: "password", Value: "hunter2"},
-					},
-				},
+				Branches: sops.TreeBranches{e2ePlainBranch()},
 				Metadata: sops.Metadata{
 					Version:   "3.10.0",
 					KeyGroups: []sops.KeyGroup{{newE2EPluginKey(5 * time.Second)}},
@@ -219,12 +177,7 @@ func TestE2ERotation(t *testing.T) {
 
 	// and that spelling survives a real store round trip
 	tree := sops.Tree{
-		Branches: sops.TreeBranches{
-			{
-				{Key: "username", Value: "admin"},
-				{Key: "password", Value: "hunter2"},
-			},
-		},
+		Branches: sops.TreeBranches{e2ePlainBranch()},
 		Metadata: sops.Metadata{
 			Version:   "3.10.0",
 			KeyGroups: []sops.KeyGroup{{fresh}},
@@ -253,12 +206,7 @@ func TestE2EMixedGroupRescue(t *testing.T) {
 	pk := newE2EPluginKey(5 * time.Second)
 	ak := newE2EAgeKey(t)
 	tree := sops.Tree{
-		Branches: sops.TreeBranches{
-			{
-				{Key: "username", Value: "admin"},
-				{Key: "password", Value: "hunter2"},
-			},
-		},
+		Branches: sops.TreeBranches{e2ePlainBranch()},
 		Metadata: sops.Metadata{
 			Version:   "3.10.0",
 			KeyGroups: []sops.KeyGroup{{pk, ak}},
@@ -318,12 +266,7 @@ func TestE2ELegacyMetadataNeutrality(t *testing.T) {
 			dataKey := randomDataKey(t)
 			ak := newE2EAgeKey(t)
 			tree := sops.Tree{
-				Branches: sops.TreeBranches{
-					{
-						{Key: "username", Value: "admin"},
-						{Key: "password", Value: "hunter2"},
-					},
-				},
+				Branches: sops.TreeBranches{e2ePlainBranch()},
 				Metadata: sops.Metadata{
 					Version:   "3.9.4",
 					KeyGroups: []sops.KeyGroup{{ak}},
