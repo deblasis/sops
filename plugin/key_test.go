@@ -70,7 +70,7 @@ func TestToStringDigestsConfigWithoutKeyRef(t *testing.T) {
 	k1 := NewMasterKey("testplugin", map[string]any{"a": 1}, time.Second, "")
 	k2 := NewMasterKey("testplugin", map[string]any{"b": 2}, time.Second, "")
 	k3 := NewMasterKey("testplugin", map[string]any{"a": 1}, time.Second, "")
-	assert.Contains(t, k1.ToString(), "testplugin:")
+	assert.Regexp(t, `^testplugin:[0-9a-f]{8}$`, k1.ToString())
 	assert.NotEqual(t, k1.ToString(), k2.ToString())
 	assert.Equal(t, k1.ToString(), k3.ToString())
 

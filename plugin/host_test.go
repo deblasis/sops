@@ -152,7 +152,7 @@ func TestContextCancelAbandonsPromptlyWithoutCounting(t *testing.T) {
 	_, err := h.do(ctx, request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "got: %v", err)
-	assert.Less(t, time.Since(start), 1500*time.Millisecond)
+	assert.Less(t, time.Since(start), h.timeout, "ctx cancellation must beat the host timeout")
 	assert.Equal(t, 0, h.restarts, "caller cancellation is not plugin misbehavior")
 	assert.Nil(t, h.cmd, "abandoned child must still be killed")
 }
