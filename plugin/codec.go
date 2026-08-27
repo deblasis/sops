@@ -24,6 +24,9 @@ func readLine(r *bufio.Reader, max int) ([]byte, error) {
 	for {
 		chunk, err := r.ReadSlice('\n')
 		acc = append(acc, chunk...)
+		// max bounds total bytes read including the LF terminator, so a
+		// max-byte payload + LF is already over the cap. Checked inside the
+		// loop: an oversized line is rejected without buffering it whole.
 		if len(acc) > max {
 			return nil, errLineTooLong
 		}
@@ -40,7 +43,11 @@ func readLine(r *bufio.Reader, max int) ([]byte, error) {
 			return nil, err
 		}
 		line := acc[:len(acc)-1]
-		return line, validateLine(line)
+		if err := validateLine(line); err != nil {
+			// Error paths never hand back data.
+			return nil, err
+		}
+		return line, nil
 	}
 }
 
@@ -64,7 +71,10 @@ func writeLine(w io.Writer, v any) error {
 		return err
 	}
 	b = append(b, '\n')
-	_, err = w.Write(b)
+	n, err := w.Write(b)
+	if err == nil && n != len(b) {
+		err = io.ErrShortWrite
+	}
 	return err
 }
 

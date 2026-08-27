@@ -3,7 +3,6 @@ package plugin
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -41,6 +40,19 @@ func TestReadLineEnforcesCap(t *testing.T) {
 	assert.ErrorIs(t, err, errLineTooLong)
 }
 
+// max includes the LF: a max-1 payload + LF is the largest accepted line.
+func TestReadLineCapBoundary(t *testing.T) {
+	r := bufio.NewReader(strings.NewReader(strings.Repeat("a", 1023) + "\n"))
+	line, err := readLine(r, 1024)
+	require.NoError(t, err)
+	assert.Equal(t, 1023, len(line))
+
+	r = bufio.NewReader(strings.NewReader(strings.Repeat("a", 1024) + "\n"))
+	_, err = readLine(r, 1024)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errLineTooLong)
+}
+
 func TestReadLineRejectsPartialThenEOF(t *testing.T) {
 	r := bufio.NewReader(strings.NewReader("{\"id\":1"))
 	_, err := readLine(r, 1024)
@@ -70,6 +82,35 @@ func TestReadLineSpansBufioBuffer(t *testing.T) {
 	assert.Equal(t, strings.TrimSuffix(long, "\n"), string(line))
 }
 
+func TestReadLineCapEnforcedAcrossBufferFull(t *testing.T) {
+	// Oversized line rejected mid-accumulation, not after buffering it all.
+	in := strings.Repeat("a", 8192) + "\n"
+	r := bufio.NewReader(strings.NewReader(in))
+	_, err := readLine(r, 4096)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errLineTooLong)
+}
+
+func TestReadLineRejectsCRMidLine(t *testing.T) {
+	// CR is banned anywhere in a line, not just as CRLF framing.
+	r := bufio.NewReader(strings.NewReader("a\rb\n"))
+	_, err := readLine(r, 1024)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errCRInLine)
+}
+
+// NUL is valid UTF-8: framing accepts it, only JSON decoding rejects it.
+func TestReadLineAcceptsNULButDecodeRejects(t *testing.T) {
+	line := []byte{'a', 0x00, 'b'}
+	r := bufio.NewReader(bytes.NewReader(append(line, '\n')))
+	got, err := readLine(r, 1024)
+	require.NoError(t, err)
+	assert.Equal(t, line, got)
+
+	var resp response
+	require.Error(t, decodeInto(got, &resp))
+}
+
 func TestWriteLineAppendsLF(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, writeLine(&buf, request{ID: 1, Action: "encrypt"}))
@@ -78,22 +119,18 @@ func TestWriteLineAppendsLF(t *testing.T) {
 	assert.NotContains(t, out, "\r")
 }
 
+type shortWriter struct{}
+
+// Writes succeed but swallow bytes: must surface as io.ErrShortWrite.
+func (shortWriter) Write(b []byte) (int, error) { return len(b) / 2, nil }
+
+func TestWriteLineRejectsShortWrite(t *testing.T) {
+	assert.ErrorIs(t, writeLine(shortWriter{}, request{ID: 1, Action: "encrypt"}), io.ErrShortWrite)
+}
+
 func TestDecodeIntoRejectsNonJSON(t *testing.T) {
 	var r response
 	err := decodeInto([]byte("not json"), &r)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-JSON stdout")
-}
-
-func TestHandshakeTagsPinned(t *testing.T) {
-	b, err := json.Marshal(handshakeOut{Protocol: "sops-plugin", MaxVersion: 1})
-	require.NoError(t, err)
-	assert.JSONEq(t, `{"protocol":"sops-plugin","max_version":1}`, string(b))
-
-	var in handshakeIn
-	require.NoError(t, json.Unmarshal([]byte(`{"protocol":"sops-plugin","version":1,"plugin":"p","plugin_version":"1.0.0"}`), &in))
-	assert.Equal(t, "sops-plugin", in.Protocol)
-	assert.Equal(t, 1, in.Version)
-	assert.Equal(t, "p", in.Plugin)
-	assert.Equal(t, "1.0.0", in.PluginVersion)
 }

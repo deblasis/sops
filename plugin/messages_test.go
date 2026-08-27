@@ -44,3 +44,16 @@ func TestPlaintextBase64RoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(b, &out))
 	assert.Equal(t, in.Plaintext, out.Plaintext)
 }
+
+func TestHandshakeTagsPinned(t *testing.T) {
+	b, err := json.Marshal(handshakeOut{Protocol: "sops-plugin", MaxVersion: 1})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"protocol":"sops-plugin","max_version":1}`, string(b))
+
+	var in handshakeIn
+	require.NoError(t, json.Unmarshal([]byte(`{"protocol":"sops-plugin","version":1,"plugin":"p","plugin_version":"1.0.0"}`), &in))
+	assert.Equal(t, "sops-plugin", in.Protocol)
+	assert.Equal(t, 1, in.Version)
+	assert.Equal(t, "p", in.Plugin)
+	assert.Equal(t, "1.0.0", in.PluginVersion)
+}
