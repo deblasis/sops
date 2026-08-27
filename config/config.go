@@ -4,12 +4,14 @@ Package config provides a way to find and load SOPS configuration files
 package config //import "github.com/getsops/sops/v3/config"
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/age"
@@ -19,6 +21,7 @@ import (
 	"github.com/getsops/sops/v3/hcvault"
 	"github.com/getsops/sops/v3/kms"
 	"github.com/getsops/sops/v3/pgp"
+	"github.com/getsops/sops/v3/plugin"
 	"github.com/getsops/sops/v3/publish"
 	"go.yaml.in/yaml/v3"
 )
@@ -130,14 +133,23 @@ type configFile struct {
 }
 
 type keyGroup struct {
-	Merge   []keyGroup   `yaml:"merge"`
-	KMS     []kmsKey     `yaml:"kms"`
-	GCPKMS  []gcpKmsKey  `yaml:"gcp_kms"`
-	HCKms   []hckmsKey   `yaml:"hckms"`
-	AzureKV []azureKVKey `yaml:"azure_keyvault"`
-	Vault   []string     `yaml:"hc_vault"`
-	Age     []string     `yaml:"age"`
-	PGP     []string     `yaml:"pgp"`
+	Merge   []keyGroup        `yaml:"merge"`
+	KMS     []kmsKey          `yaml:"kms"`
+	GCPKMS  []gcpKmsKey       `yaml:"gcp_kms"`
+	HCKms   []hckmsKey        `yaml:"hckms"`
+	AzureKV []azureKVKey      `yaml:"azure_keyvault"`
+	Vault   []string          `yaml:"hc_vault"`
+	Age     []string          `yaml:"age"`
+	PGP     []string          `yaml:"pgp"`
+	Plugin  []pluginKeyConfig `yaml:"plugins,omitempty"`
+}
+
+type pluginKeyConfig struct {
+	Binary  string         `yaml:"binary"`
+	Path    string         `yaml:"path,omitempty"`
+	Timeout string         `yaml:"timeout,omitempty"`
+	KeyRef  string         `yaml:"key_ref,omitempty"`
+	Config  map[string]any `yaml:"config"`
 }
 
 type gcpKmsKey struct {
@@ -176,24 +188,25 @@ type destinationRule struct {
 }
 
 type creationRule struct {
-	PathRegex               string      `yaml:"path_regex"`
-	KMS                     interface{} `yaml:"kms"` // string or []string
-	AwsProfile              string      `yaml:"aws_profile"`
-	Age                     interface{} `yaml:"age"`     // string or []string
-	PGP                     interface{} `yaml:"pgp"`     // string or []string
-	GCPKMS                  interface{} `yaml:"gcp_kms"` // string or []string
-	HCKms                   []string    `yaml:"hckms"`
-	AzureKeyVault           interface{} `yaml:"azure_keyvault"`       // string or []string
-	VaultURI                interface{} `yaml:"hc_vault_transit_uri"` // string or []string
-	KeyGroups               []keyGroup  `yaml:"key_groups"`
-	ShamirThreshold         int         `yaml:"shamir_threshold"`
-	UnencryptedSuffix       string      `yaml:"unencrypted_suffix"`
-	EncryptedSuffix         string      `yaml:"encrypted_suffix"`
-	UnencryptedRegex        string      `yaml:"unencrypted_regex"`
-	EncryptedRegex          string      `yaml:"encrypted_regex"`
-	UnencryptedCommentRegex string      `yaml:"unencrypted_comment_regex"`
-	EncryptedCommentRegex   string      `yaml:"encrypted_comment_regex"`
-	MACOnlyEncrypted        bool        `yaml:"mac_only_encrypted"`
+	PathRegex               string            `yaml:"path_regex"`
+	KMS                     interface{}       `yaml:"kms"` // string or []string
+	AwsProfile              string            `yaml:"aws_profile"`
+	Age                     interface{}       `yaml:"age"`     // string or []string
+	PGP                     interface{}       `yaml:"pgp"`     // string or []string
+	GCPKMS                  interface{}       `yaml:"gcp_kms"` // string or []string
+	HCKms                   []string          `yaml:"hckms"`
+	AzureKeyVault           interface{}       `yaml:"azure_keyvault"`       // string or []string
+	VaultURI                interface{}       `yaml:"hc_vault_transit_uri"` // string or []string
+	KeyGroups               []keyGroup        `yaml:"key_groups"`
+	ShamirThreshold         int               `yaml:"shamir_threshold"`
+	UnencryptedSuffix       string            `yaml:"unencrypted_suffix"`
+	EncryptedSuffix         string            `yaml:"encrypted_suffix"`
+	UnencryptedRegex        string            `yaml:"unencrypted_regex"`
+	EncryptedRegex          string            `yaml:"encrypted_regex"`
+	UnencryptedCommentRegex string            `yaml:"unencrypted_comment_regex"`
+	EncryptedCommentRegex   string            `yaml:"encrypted_comment_regex"`
+	MACOnlyEncrypted        bool              `yaml:"mac_only_encrypted"`
+	Plugin                  []pluginKeyConfig `yaml:"plugins,omitempty"`
 }
 
 // Helper methods to safely extract keys as []string
@@ -357,7 +370,39 @@ func extractMasterKeys(group keyGroup) (sops.KeyGroup, error) {
 			return nil, err
 		}
 	}
+	for _, p := range group.Plugin {
+		key, err := pluginMasterKeyFromConfig(p)
+		if err != nil {
+			return nil, err
+		}
+		keyGroup = append(keyGroup, key)
+	}
 	return deduplicateKeygroup(keyGroup), nil
+}
+
+// cap plugin config so one rule can't balloon the config file in memory
+const maxPluginConfigBytes = 64 * 1024
+const defaultPluginTimeout = 30 * time.Second
+
+func pluginMasterKeyFromConfig(p pluginKeyConfig) (*plugin.MasterKey, error) {
+	b, err := json.Marshal(p.Config)
+	if err != nil {
+		return nil, fmt.Errorf("plugin %s: config not serializable: %w", p.Binary, err)
+	}
+	if len(b) > maxPluginConfigBytes {
+		return nil, fmt.Errorf("plugin %s: config exceeds %d bytes", p.Binary, maxPluginConfigBytes)
+	}
+	timeout := defaultPluginTimeout
+	if p.Timeout != "" {
+		d, err := time.ParseDuration(p.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("plugin %s: bad timeout %q: %w", p.Binary, p.Timeout, err)
+		}
+		timeout = d
+	}
+	k := plugin.NewMasterKey(p.Binary, p.Config, timeout, p.Path)
+	k.ExpectedKeyRef = p.KeyRef
+	return k, nil
 }
 
 func getKeysWithValidation(getKeysFunc func() ([]string, error), keyType string) ([]string, error) {
@@ -444,6 +489,13 @@ func getKeyGroupsFromCreationRule(cRule *creationRule, kmsEncryptionContext map[
 		}
 		for _, k := range vaultKeys {
 			keyGroup = append(keyGroup, k)
+		}
+		for _, p := range cRule.Plugin {
+			key, err := pluginMasterKeyFromConfig(p)
+			if err != nil {
+				return nil, err
+			}
+			keyGroup = append(keyGroup, key)
 		}
 		groups = append(groups, keyGroup)
 	}

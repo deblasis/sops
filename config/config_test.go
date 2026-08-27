@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/getsops/sops/v3/keys"
+	"github.com/getsops/sops/v3/plugin"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -918,4 +921,106 @@ creation_rules:
 	// The KMS key should have the encryption context applied
 	// Format: ARN|context where context is "AppName:myapp"
 	assert.Equal(t, "arn:aws:kms:us-west-2:123456789012:key/12345678-1234-1234-1234-123456789012|AppName:myapp", conf.KeyGroups[0][0].ToString())
+}
+
+var sampleConfigWithPluginKeys = []byte(`
+creation_rules:
+  - path_regex: secrets/.*
+    plugins:
+      - binary: ocikms
+        timeout: 30s
+        key_ref: ocid1.key.oc1..new
+        config:
+          key_id: ocid1.key.oc1..new
+          crypto_endpoint: https://aaa.crypto.uk-london-1.oraclecloud.com
+`)
+
+func TestLoadConfigFileWithPluginKeys(t *testing.T) {
+	expected := configFile{
+		CreationRules: []creationRule{
+			{
+				PathRegex: "secrets/.*",
+				Plugin: []pluginKeyConfig{
+					{
+						Binary:  "ocikms",
+						Timeout: "30s",
+						KeyRef:  "ocid1.key.oc1..new",
+						Config: map[string]any{
+							"key_id":          "ocid1.key.oc1..new",
+							"crypto_endpoint": "https://aaa.crypto.uk-london-1.oraclecloud.com",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	conf := configFile{}
+	err := conf.load(sampleConfigWithPluginKeys)
+	assert.Nil(t, err)
+	assert.Equal(t, expected, conf)
+	assert.Equal(t, "https://aaa.crypto.uk-london-1.oraclecloud.com", conf.CreationRules[0].Plugin[0].Config["crypto_endpoint"])
+
+	groups, err := getKeyGroupsFromCreationRule(&conf.CreationRules[0], nil)
+	assert.Nil(t, err)
+	assert.Len(t, groups, 1)
+	assert.Len(t, groups[0], 1)
+	pk, ok := groups[0][0].(*plugin.MasterKey)
+	assert.True(t, ok)
+	assert.Equal(t, "ocikms", pk.BinaryName)
+	assert.Equal(t, 30*time.Second, pk.Timeout)
+	assert.Equal(t, "ocid1.key.oc1..new", pk.ExpectedKeyRef)
+}
+
+var sampleConfigWithPluginKeyGroups = []byte(`
+creation_rules:
+  - path_regex: ""
+    key_groups:
+      - age:
+          - age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p
+        plugins:
+          - binary: ocikms
+            key_ref: ocid1.key.oc1..new
+`)
+
+func TestLoadConfigFileWithPluginKeyGroups(t *testing.T) {
+	conf, err := parseCreationRuleForFile(parseConfigFile(sampleConfigWithPluginKeyGroups, t), "/conf/path", "whatever", nil)
+	assert.Nil(t, err)
+	assert.Len(t, conf.KeyGroups, 1)
+	assert.Len(t, conf.KeyGroups[0], 2)
+	assert.Equal(t, "age", conf.KeyGroups[0][0].TypeToIdentifier())
+	pk, ok := conf.KeyGroups[0][1].(*plugin.MasterKey)
+	assert.True(t, ok)
+	assert.Equal(t, "ocikms", pk.BinaryName)
+	assert.Equal(t, "ocid1.key.oc1..new", pk.ExpectedKeyRef)
+	assert.Equal(t, 30*time.Second, pk.Timeout)
+}
+
+func TestPluginConfigTooLarge(t *testing.T) {
+	confBytes := []byte(fmt.Sprintf(`
+creation_rules:
+  - path_regex: ""
+    plugins:
+      - binary: ocikms
+        config:
+          blob: %s
+`, strings.Repeat("a", 70*1024)))
+	_, err := parseCreationRuleForFile(parseConfigFile(confBytes, t), "/conf/path", "whatever", nil)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "exceeds 65536")
+}
+
+var sampleConfigWithBadPluginTimeout = []byte(`
+creation_rules:
+  - path_regex: ""
+    plugins:
+      - binary: ocikms
+        timeout: thirty
+`)
+
+func TestPluginBadTimeout(t *testing.T) {
+	_, err := parseCreationRuleForFile(parseConfigFile(sampleConfigWithBadPluginTimeout, t), "/conf/path", "whatever", nil)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "plugin ocikms")
+	assert.Contains(t, err.Error(), "timeout")
 }
