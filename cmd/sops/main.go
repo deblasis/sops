@@ -30,6 +30,7 @@ import (
 	filestatuscmd "github.com/getsops/sops/v3/cmd/sops/subcommand/filestatus"
 	"github.com/getsops/sops/v3/cmd/sops/subcommand/groups"
 	keyservicecmd "github.com/getsops/sops/v3/cmd/sops/subcommand/keyservice"
+	pluginscmd "github.com/getsops/sops/v3/cmd/sops/subcommand/plugins"
 	publishcmd "github.com/getsops/sops/v3/cmd/sops/subcommand/publish"
 	"github.com/getsops/sops/v3/cmd/sops/subcommand/updatekeys"
 	"github.com/getsops/sops/v3/config"
@@ -513,6 +514,33 @@ func main() {
 					return err
 				}
 				return nil
+			},
+		},
+		{
+			Name:  "plugins",
+			Usage: "manage and diagnose SOPS plugins",
+			Subcommands: []cli.Command{
+				{
+					Name:  "list",
+					Usage: "list plugin binaries discoverable on PATH, with handshake-probed versions",
+					Action: func(c *cli.Context) error {
+						return pluginscmd.List(os.Stdout)
+					},
+				},
+				{
+					Name:      "verify",
+					Usage:     "run conformance checks against a plugin binary",
+					ArgsUsage: `binary`,
+					Action: func(c *cli.Context) error {
+						if c.NArg() < 1 {
+							return common.NewExitError("Error: no plugin binary specified", codes.NoFileSpecified)
+						}
+						if err := pluginscmd.Verify(os.Stdout, c.Args()[0]); err != nil {
+							return common.NewExitError(err, codes.ErrorGeneric)
+						}
+						return nil
+					},
+				},
 			},
 		},
 		{

@@ -38,6 +38,7 @@ type host struct {
 	stdin         io.WriteCloser
 	stdout        *bufio.Reader
 	stderr        *limitedBuffer
+	pluginName    string
 	pluginVersion string
 	nextID        int64
 	restarts      int
@@ -107,6 +108,7 @@ func (h *host) start(ctx context.Context) error {
 		return fmt.Errorf("%w: plugin %s (%s %s) wants protocol version %d, sops supports 1..%d",
 			errVersionRefused, h.binaryName, hs.Plugin, hs.PluginVersion, hs.Version, protocolVersion)
 	}
+	h.pluginName = hs.Plugin
 	h.pluginVersion = hs.PluginVersion
 	return nil
 }
