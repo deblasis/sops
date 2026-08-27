@@ -2,6 +2,7 @@ package stores
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -187,7 +188,27 @@ func TestPluginWrappedBlobCapAtLoad(t *testing.T) {
 	md := metadataFromWireMap(t, wire)
 	_, err := md.ToInternal()
 	if assert.Error(t, err) {
-		assert.Contains(t, err.Error(), "65536")
+		assert.Contains(t, err.Error(), "ocikms")
+		assert.Contains(t, err.Error(), fmt.Sprint(maxWrappedBytes))
+	}
+}
+
+func TestPluginBadCreatedAt(t *testing.T) {
+	wire := map[string]interface{}{
+		"version":      "3.10.0",
+		"lastmodified": "2026-08-27T00:00:00Z",
+		"mac":          "deadbeef",
+		"plugin": []interface{}{map[string]interface{}{
+			"binary_name": "ocikms",
+			"enc":         "ocikms.v1.abc",
+			"created_at":  "not-a-time",
+		}},
+	}
+	md := metadataFromWireMap(t, wire)
+	_, err := md.ToInternal()
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "ocikms")
+		assert.Contains(t, err.Error(), "created_at")
 	}
 }
 
