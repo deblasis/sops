@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -68,6 +68,11 @@ func main() {
 		os.Exit(2)
 	}
 	switch mode {
+	case "hang_startup":
+		// sleep before the handshake: exercises the host's handshake timeout
+		for {
+			time.Sleep(time.Hour)
+		}
 	case "exit1_startup":
 		// fail before the handshake: the host's handshake read gets EOF;
 		// exit code 2 is intentional (kubectl convention for auth/config failure)
