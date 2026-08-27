@@ -21,6 +21,7 @@ import (
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/aes"
 	"github.com/getsops/sops/v3/age"
+	"github.com/getsops/sops/v3/keyservice"
 	"github.com/getsops/sops/v3/plugin"
 	iniStore "github.com/getsops/sops/v3/stores/ini"
 	jsonStore "github.com/getsops/sops/v3/stores/json"
@@ -107,19 +108,38 @@ func newE2EAgeKey(t *testing.T) *age.MasterKey {
 	return keys[0]
 }
 
-// encryptE2ETree wraps the data key with every key via EncryptIfNeeded (the
-// in-process path, where the plugin key learns its KeyRef), encrypts the
-// values and records the MAC.
+// encryptE2ETree wraps the data key with every key through the production
+// path (UpdateMasterKeysWithKeyServices with a local client, exactly what
+// cmd/sops/common does), encrypts the values and records the MAC.
 func encryptE2ETree(t *testing.T, tree *sops.Tree, dataKey []byte) {
 	t.Helper()
-	for _, group := range tree.Metadata.KeyGroups {
-		for _, key := range group {
-			require.NoError(t, key.EncryptIfNeeded(dataKey), "wrapping with %s", key.ToString())
-		}
-	}
+	errs := tree.Metadata.UpdateMasterKeysWithKeyServices(dataKey,
+		[]keyservice.KeyServiceClient{keyservice.NewLocalClient()})
+	require.Empty(t, errs, "UpdateMasterKeys errors")
 	mac, err := tree.Encrypt(dataKey, aes.NewCipher())
 	require.NoError(t, err)
 	tree.Metadata.MessageAuthenticationCode = mac
+}
+
+// Regression: the local keyservice encrypt path must leave the caller's key
+// carrying the plugin's answer. The plugin's key_ref and plugin_version only
+// exist on the in-process key object; if the wrap goes through the wire
+// round trip, metadata is written with empty key_ref and every file then
+// reports NeedsRotation forever.
+func TestE2EUpdateMasterKeysViaLocalKeyservice(t *testing.T) {
+	e2eSetup(t)
+	dataKey := randomDataKey(t)
+	key := newE2EPluginKey(5 * time.Second)
+	md := sops.Metadata{
+		Version:   "3.10.0",
+		KeyGroups: []sops.KeyGroup{{key}},
+	}
+	errs := md.UpdateMasterKeysWithKeyServices(dataKey,
+		[]keyservice.KeyServiceClient{keyservice.NewLocalClient()})
+	require.Empty(t, errs)
+	assert.Equal(t, "testkey/primary", key.KeyRef)
+	assert.Equal(t, "1.2.3", key.PluginVersion)
+	assert.NotEmpty(t, key.WrappedKey)
 }
 
 func TestE2EStoreRoundTrip(t *testing.T) {

@@ -422,7 +422,10 @@ Key service. SOPS's local, in-process key service client runs plugins
 executables by default. Over the wire the plugin key carries binary name,
 config (verbatim JSON, opaque), and key reference; the path override and
 per-key timeout do not cross the wire, and server-side spawns obey the
-SERVER's allowlist. (Protocol-buffer field 3 of the plugin key message is
+SERVER's allowlist. The local client wraps plugin keys in-process against
+the caller's own key object (the key reference the plugin answers with
+cannot cross the wire), so a plugin key wrapped by a remote key service is
+written with an empty `key_ref` until the file is re-wrapped locally. (Protocol-buffer field 3 of the plugin key message is
 reserved: it briefly held a wrapped value and was removed as write-only
 before release.)
 

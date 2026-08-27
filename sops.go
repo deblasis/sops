@@ -57,6 +57,7 @@ import (
 	"github.com/getsops/sops/v3/keyservice"
 	"github.com/getsops/sops/v3/logging"
 	"github.com/getsops/sops/v3/pgp"
+	"github.com/getsops/sops/v3/plugin"
 	"github.com/getsops/sops/v3/shamir"
 )
 
@@ -804,22 +805,45 @@ func (m *Metadata) UpdateMasterKeysWithKeyServices(dataKey []byte, svcs []keyser
 			}
 		}
 		for _, key := range group {
-			svcKey := keyservice.KeyFromMasterKey(key)
 			var keyErrs []error
 			encrypted := false
-			for _, svc := range svcs {
-				rsp, err := svc.Encrypt(context.Background(), &keyservice.EncryptRequest{
-					Key:       &svcKey,
-					Plaintext: part,
-				})
-				if err != nil {
-					keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
-					continue
+			// A plugin key learns its identity (key_ref, plugin_version) from
+			// the wrap itself, and that answer cannot cross the keyservice
+			// wire: prefer a local client's in-process wrap on the caller's
+			// own key object so metadata records what the plugin answered.
+			if pk, ok := key.(*plugin.MasterKey); ok {
+				for _, svc := range svcs {
+					lc, ok := svc.(keyservice.LocalClient)
+					if !ok {
+						continue
+					}
+					handled, err := lc.EncryptMasterKey(pk, part)
+					if err != nil {
+						keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
+						continue
+					}
+					if handled {
+						encrypted = true
+						break
+					}
 				}
-				key.SetEncryptedDataKey(rsp.Ciphertext)
-				encrypted = true
-				// Only need to encrypt the key successfully with one service
-				break
+			}
+			if !encrypted {
+				svcKey := keyservice.KeyFromMasterKey(key)
+				for _, svc := range svcs {
+					rsp, err := svc.Encrypt(context.Background(), &keyservice.EncryptRequest{
+						Key:       &svcKey,
+						Plaintext: part,
+					})
+					if err != nil {
+						keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
+						continue
+					}
+					key.SetEncryptedDataKey(rsp.Ciphertext)
+					encrypted = true
+					// Only need to encrypt the key successfully with one service
+					break
+				}
 			}
 			if !encrypted {
 				errs = append(errs, keyErrs...)
@@ -934,6 +958,26 @@ func decryptKey(key keys.MasterKey, svcs []keyservice.KeyServiceClient) ([]byte,
 	var part []byte
 	decryptErr := decryptKeyError{
 		keyName: key.ToString(),
+	}
+	// plugin keys decrypt in-process on the local client (encrypt symmetric:
+	// the key's identity never crosses the keyservice wire)
+	if pk, ok := key.(*plugin.MasterKey); ok {
+		for _, svc := range svcs {
+			lc, ok := svc.(keyservice.LocalClient)
+			if !ok {
+				continue
+			}
+			handled, plaintext, err := lc.DecryptMasterKey(pk)
+			if !handled {
+				continue
+			}
+			if err != nil {
+				decryptErr.errs = append(decryptErr.errs, err)
+			} else {
+				part = plaintext
+			}
+			break
+		}
 	}
 	for _, svc := range svcs {
 		// All keys in a key group encrypt the same part, so as soon
