@@ -125,7 +125,7 @@ func buildTestPlugin(t *testing.T) string {
 }
 
 func TestPluginKeyGatedByDefault(t *testing.T) {
-	srv := NewServer(false)
+	srv := Server{}
 	k := &Key{KeyType: &Key_PluginKey{PluginKey: &PluginKey{BinaryName: "testplugin", Config: `{}`}}}
 	_, err := srv.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("dk")})
 	if !errors.Is(err, errPluginsDisabled) {
@@ -141,7 +141,7 @@ func TestPluginKeyEncryptionWhenEnabled(t *testing.T) {
 	require.NoError(t, os.WriteFile(cfgPath, []byte("plugins:\n  allowed:\n    - testplugin\n"), 0o600))
 	t.Setenv("SOPS_LOCAL_CONFIG", cfgPath)
 
-	srv := NewServerWithOptions(false, true)
+	srv := Server{EnablePlugins: true}
 	k := &Key{KeyType: &Key_PluginKey{PluginKey: &PluginKey{BinaryName: "testplugin", Config: `{}`}}}
 	resp, err := srv.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("datakey-0000000000000000")})
 	require.NoError(t, err)
@@ -156,22 +156,38 @@ func TestPluginKeyDecryptWhenEnabled(t *testing.T) {
 	require.NoError(t, os.WriteFile(cfgPath, []byte("plugins:\n  allowed:\n    - testplugin\n"), 0o600))
 	t.Setenv("SOPS_LOCAL_CONFIG", cfgPath)
 
-	srv := NewServerWithOptions(false, true)
-	pk := &PluginKey{BinaryName: "testplugin", Config: `{}`}
-	k := &Key{KeyType: &Key_PluginKey{PluginKey: pk}}
+	srv := Server{EnablePlugins: true}
+	k := &Key{KeyType: &Key_PluginKey{PluginKey: &PluginKey{BinaryName: "testplugin", Config: `{}`}}}
 	resp, err := srv.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("datakey-0000000000000000")})
 	require.NoError(t, err)
 
-	pk.Wrapped = string(resp.Ciphertext)
-	dresp, err := srv.Decrypt(context.Background(), &DecryptRequest{Key: k})
+	dresp, err := srv.Decrypt(context.Background(), &DecryptRequest{Key: k, Ciphertext: resp.Ciphertext})
+	require.NoError(t, err)
+	assert.Equal(t, []byte("datakey-0000000000000000"), dresp.Plaintext)
+}
+
+func TestLocalClientPluginKeyRoundtrip(t *testing.T) {
+	bin := buildTestPlugin(t)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
+	cfgPath := filepath.Join(t.TempDir(), "local.yaml")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("plugins:\n  allowed:\n    - testplugin\n"), 0o600))
+	t.Setenv("SOPS_LOCAL_CONFIG", cfgPath)
+
+	client := NewLocalClient()
+	k := &Key{KeyType: &Key_PluginKey{PluginKey: &PluginKey{BinaryName: "testplugin", Config: `{}`}}}
+	resp, err := client.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("datakey-0000000000000000")})
+	require.NoError(t, err)
+
+	dresp, err := client.Decrypt(context.Background(), &DecryptRequest{Key: k, Ciphertext: resp.Ciphertext})
 	require.NoError(t, err)
 	assert.Equal(t, []byte("datakey-0000000000000000"), dresp.Plaintext)
 }
 
 func TestPluginKeyBadConfigRejected(t *testing.T) {
-	srv := NewServerWithOptions(false, true)
+	srv := Server{EnablePlugins: true}
 	k := &Key{KeyType: &Key_PluginKey{PluginKey: &PluginKey{BinaryName: "testplugin", Config: `not json`}}}
 	_, err := srv.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("dk")})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid plugin config")
+	assert.Contains(t, err.Error(), `invalid plugin config JSON for plugin "testplugin"`)
 }

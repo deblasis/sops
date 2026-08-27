@@ -13,7 +13,9 @@ type LocalClient struct {
 
 // NewLocalClient creates a new local client
 func NewLocalClient() LocalClient {
-	return LocalClient{Server{}}
+	// plugins enabled: the local client is in-process, not remote executable
+	// selection, and spawns still pass this machine's own allowlist
+	return LocalClient{Server: Server{EnablePlugins: true}}
 }
 
 // NewCustomLocalClient creates a new local client with a non-default backing

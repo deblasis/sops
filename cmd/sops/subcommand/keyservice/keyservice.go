@@ -36,8 +36,10 @@ func Run(opts Opts) error {
 	}
 	defer lis.Close()
 	grpcServer := grpc.NewServer()
-	keyservice.RegisterKeyServiceServer(grpcServer, keyservice.NewServerWithOptions(
-		opts.Prompt, opts.EnablePlugins))
+	keyservice.RegisterKeyServiceServer(grpcServer, keyservice.Server{
+		Prompt:        opts.Prompt,
+		EnablePlugins: opts.EnablePlugins,
+	})
 	log.Infof("Listening on %s://%s", opts.Network, opts.Address)
 
 	// Close socket if we get killed

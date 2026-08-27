@@ -491,7 +491,7 @@ func main() {
 				},
 				cli.BoolFlag{
 					Name:  "enable-plugins",
-					Usage: "enable experimental plugin key execution on this server",
+					Usage: "Enable experimental plugin key execution on this server",
 				},
 				cli.BoolFlag{
 					Name:  "verbose",

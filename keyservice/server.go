@@ -21,18 +21,10 @@ import (
 type Server struct {
 	// Prompt indicates whether the server should prompt before decrypting or encrypting data
 	Prompt bool
-	// EnablePlugins opts into experimental plugin key execution on this host
+	// EnablePlugins opts into experimental plugin key execution on this host;
+	// intended for network-exposed servers, where remote clients must not
+	// select server-side executables unless the operator opted in
 	EnablePlugins bool
-}
-
-// NewServer returns a Server with plugin key execution disabled
-func NewServer(prompt bool) Server {
-	return Server{Prompt: prompt}
-}
-
-// NewServerWithOptions enables experimental plugin key handling.
-func NewServerWithOptions(prompt, enablePlugins bool) Server {
-	return Server{Prompt: prompt, EnablePlugins: enablePlugins}
 }
 
 // gated: remote clients must not select server-side executables by default
@@ -118,10 +110,10 @@ func (ks *Server) encryptWithAge(key *AgeKey, plaintext []byte) ([]byte, error) 
 }
 
 // pluginConfigFromJSON parses the opaque config blob sent over the wire
-func pluginConfigFromJSON(config string) (map[string]any, error) {
+func pluginConfigFromJSON(binaryName, config string) (map[string]any, error) {
 	var c map[string]any
 	if err := json.Unmarshal([]byte(config), &c); err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid plugin config JSON: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid plugin config JSON for plugin %q: %v", binaryName, err)
 	}
 	return c, nil
 }
@@ -130,7 +122,7 @@ func (ks *Server) encryptWithPlugin(key *PluginKey, plaintext []byte) ([]byte, e
 	if !ks.EnablePlugins {
 		return nil, errPluginsDisabled
 	}
-	config, err := pluginConfigFromJSON(key.Config)
+	config, err := pluginConfigFromJSON(key.BinaryName, key.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -145,17 +137,12 @@ func (ks *Server) decryptWithPlugin(key *PluginKey, ciphertext []byte) ([]byte, 
 	if !ks.EnablePlugins {
 		return nil, errPluginsDisabled
 	}
-	config, err := pluginConfigFromJSON(key.Config)
+	config, err := pluginConfigFromJSON(key.BinaryName, key.Config)
 	if err != nil {
 		return nil, err
 	}
 	pluginKey := plugin.NewMasterKey(key.BinaryName, config, 0, "")
-	// the wrapped blob normally rides the key; the request body is the fallback
-	if key.Wrapped != "" {
-		pluginKey.WrappedKey = key.Wrapped
-	} else {
-		pluginKey.WrappedKey = string(ciphertext)
-	}
+	pluginKey.WrappedKey = string(ciphertext)
 	return pluginKey.Decrypt()
 }
 
@@ -326,7 +313,10 @@ func keyToString(key *Key) string {
 	case *Key_HckmsKey:
 		return fmt.Sprintf("HuaweiCloud KMS key with ID %s", k.HckmsKey.KeyId)
 	case *Key_PluginKey:
-		return fmt.Sprintf("plugin:%s (%s)", k.PluginKey.BinaryName, k.PluginKey.KeyRef)
+		if k.PluginKey.KeyRef != "" {
+			return fmt.Sprintf("Plugin key with binary %s (key %s)", k.PluginKey.BinaryName, k.PluginKey.KeyRef)
+		}
+		return fmt.Sprintf("Plugin key with binary %s", k.PluginKey.BinaryName)
 	default:
 		return "Unknown key type"
 	}
