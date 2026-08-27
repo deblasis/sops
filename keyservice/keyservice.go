@@ -100,7 +100,6 @@ func KeyFromMasterKey(mk keys.MasterKey) Key {
 				PluginKey: &PluginKey{
 					BinaryName: mk.BinaryName,
 					Config:     string(configJSON),
-					Wrapped:    mk.WrappedKey,
 					KeyRef:     mk.KeyRef,
 				},
 			},
