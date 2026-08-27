@@ -490,6 +490,10 @@ func main() {
 					Usage: "Prompt user to confirm every incoming request",
 				},
 				cli.BoolFlag{
+					Name:  "enable-plugins",
+					Usage: "enable experimental plugin key execution on this server",
+				},
+				cli.BoolFlag{
 					Name:  "verbose",
 					Usage: "Enable verbose logging output",
 				},
@@ -499,9 +503,10 @@ func main() {
 					logging.SetLevel(logrus.DebugLevel)
 				}
 				err := keyservicecmd.Run(keyservicecmd.Opts{
-					Network: c.String("network"),
-					Address: c.String("address"),
-					Prompt:  c.Bool("prompt"),
+					Network:       c.String("network"),
+					Address:       c.String("address"),
+					Prompt:        c.Bool("prompt"),
+					EnablePlugins: c.Bool("enable-plugins"),
 				})
 				if err != nil {
 					log.Errorf("Error running keyservice: %s", err)

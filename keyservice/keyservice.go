@@ -5,6 +5,7 @@ master keys.
 package keyservice
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/getsops/sops/v3/age"
@@ -15,6 +16,7 @@ import (
 	"github.com/getsops/sops/v3/keys"
 	"github.com/getsops/sops/v3/kms"
 	"github.com/getsops/sops/v3/pgp"
+	"github.com/getsops/sops/v3/plugin"
 )
 
 // KeyFromMasterKey converts a SOPS internal MasterKey to an RPC Key that can be serialized with Protocol Buffers
@@ -84,6 +86,22 @@ func KeyFromMasterKey(mk keys.MasterKey) Key {
 			KeyType: &Key_HckmsKey{
 				HckmsKey: &HckmsKey{
 					KeyId: mk.KeyID,
+				},
+			},
+		}
+	case *plugin.MasterKey:
+		// config marshal failure degrades to {}: the wire value feeds config, never path selection
+		configJSON, err := json.Marshal(mk.Config)
+		if err != nil {
+			configJSON = []byte("{}")
+		}
+		return Key{
+			KeyType: &Key_PluginKey{
+				PluginKey: &PluginKey{
+					BinaryName: mk.BinaryName,
+					Config:     string(configJSON),
+					Wrapped:    mk.WrappedKey,
+					KeyRef:     mk.KeyRef,
 				},
 			},
 		}

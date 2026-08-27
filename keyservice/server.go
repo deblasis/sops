@@ -1,6 +1,7 @@
 package keyservice
 
 import (
+	"encoding/json"
 	"fmt"
 
 	"github.com/getsops/sops/v3/age"
@@ -10,6 +11,7 @@ import (
 	"github.com/getsops/sops/v3/hcvault"
 	"github.com/getsops/sops/v3/kms"
 	"github.com/getsops/sops/v3/pgp"
+	"github.com/getsops/sops/v3/plugin"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,7 +21,22 @@ import (
 type Server struct {
 	// Prompt indicates whether the server should prompt before decrypting or encrypting data
 	Prompt bool
+	// EnablePlugins opts into experimental plugin key execution on this host
+	EnablePlugins bool
 }
+
+// NewServer returns a Server with plugin key execution disabled
+func NewServer(prompt bool) Server {
+	return Server{Prompt: prompt}
+}
+
+// NewServerWithOptions enables experimental plugin key handling.
+func NewServerWithOptions(prompt, enablePlugins bool) Server {
+	return Server{Prompt: prompt, EnablePlugins: enablePlugins}
+}
+
+// gated: remote clients must not select server-side executables by default
+var errPluginsDisabled = status.Error(codes.PermissionDenied, "plugin keys are disabled on this keyservice; start it with --enable-plugins")
 
 func (ks *Server) encryptWithPgp(key *PgpKey, plaintext []byte) ([]byte, error) {
 	pgpKey := pgp.NewMasterKeyFromFingerprint(key.Fingerprint)
@@ -98,6 +115,48 @@ func (ks *Server) encryptWithAge(key *AgeKey, plaintext []byte) ([]byte, error) 
 	}
 
 	return []byte(ageKey.EncryptedKey), nil
+}
+
+// pluginConfigFromJSON parses the opaque config blob sent over the wire
+func pluginConfigFromJSON(config string) (map[string]any, error) {
+	var c map[string]any
+	if err := json.Unmarshal([]byte(config), &c); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid plugin config JSON: %v", err)
+	}
+	return c, nil
+}
+
+func (ks *Server) encryptWithPlugin(key *PluginKey, plaintext []byte) ([]byte, error) {
+	if !ks.EnablePlugins {
+		return nil, errPluginsDisabled
+	}
+	config, err := pluginConfigFromJSON(key.Config)
+	if err != nil {
+		return nil, err
+	}
+	pluginKey := plugin.NewMasterKey(key.BinaryName, config, 0, "")
+	if err := pluginKey.Encrypt(plaintext); err != nil {
+		return nil, err
+	}
+	return []byte(pluginKey.WrappedKey), nil
+}
+
+func (ks *Server) decryptWithPlugin(key *PluginKey, ciphertext []byte) ([]byte, error) {
+	if !ks.EnablePlugins {
+		return nil, errPluginsDisabled
+	}
+	config, err := pluginConfigFromJSON(key.Config)
+	if err != nil {
+		return nil, err
+	}
+	pluginKey := plugin.NewMasterKey(key.BinaryName, config, 0, "")
+	// the wrapped blob normally rides the key; the request body is the fallback
+	if key.Wrapped != "" {
+		pluginKey.WrappedKey = key.Wrapped
+	} else {
+		pluginKey.WrappedKey = string(ciphertext)
+	}
+	return pluginKey.Decrypt()
 }
 
 func (ks *Server) decryptWithPgp(key *PgpKey, ciphertext []byte) ([]byte, error) {
@@ -230,6 +289,14 @@ func (ks Server) Encrypt(ctx context.Context,
 		response = &EncryptResponse{
 			Ciphertext: ciphertext,
 		}
+	case *Key_PluginKey:
+		ciphertext, err := ks.encryptWithPlugin(k.PluginKey, req.Plaintext)
+		if err != nil {
+			return nil, err
+		}
+		response = &EncryptResponse{
+			Ciphertext: ciphertext,
+		}
 	case nil:
 		return nil, status.Errorf(codes.NotFound, "Must provide a key")
 	default:
@@ -258,6 +325,8 @@ func keyToString(key *Key) string {
 		return fmt.Sprintf("Hashicorp Vault key with URI %s/v1/%s/keys/%s", k.VaultKey.VaultAddress, k.VaultKey.EnginePath, k.VaultKey.KeyName)
 	case *Key_HckmsKey:
 		return fmt.Sprintf("HuaweiCloud KMS key with ID %s", k.HckmsKey.KeyId)
+	case *Key_PluginKey:
+		return fmt.Sprintf("plugin:%s (%s)", k.PluginKey.BinaryName, k.PluginKey.KeyRef)
 	default:
 		return "Unknown key type"
 	}
@@ -336,6 +405,14 @@ func (ks Server) Decrypt(ctx context.Context,
 		}
 	case *Key_HckmsKey:
 		plaintext, err := ks.decryptWithHckms(k.HckmsKey, req.Ciphertext)
+		if err != nil {
+			return nil, err
+		}
+		response = &DecryptResponse{
+			Plaintext: plaintext,
+		}
+	case *Key_PluginKey:
+		plaintext, err := ks.decryptWithPlugin(k.PluginKey, req.Ciphertext)
 		if err != nil {
 			return nil, err
 		}
