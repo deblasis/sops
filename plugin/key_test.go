@@ -65,6 +65,19 @@ func TestToStringFallsBackToExpectedKeyRef(t *testing.T) {
 	assert.Equal(t, "testplugin:testkey/new", k.ToString())
 }
 
+// no key ref at all: config digest distinguishes same-binary keys, identical configs stay equal
+func TestToStringDigestsConfigWithoutKeyRef(t *testing.T) {
+	k1 := NewMasterKey("testplugin", map[string]any{"a": 1}, time.Second, "")
+	k2 := NewMasterKey("testplugin", map[string]any{"b": 2}, time.Second, "")
+	k3 := NewMasterKey("testplugin", map[string]any{"a": 1}, time.Second, "")
+	assert.Contains(t, k1.ToString(), "testplugin:")
+	assert.NotEqual(t, k1.ToString(), k2.ToString())
+	assert.Equal(t, k1.ToString(), k3.ToString())
+
+	k4 := NewMasterKey("testplugin", nil, time.Second, "")
+	assert.Equal(t, "testplugin", k4.ToString())
+}
+
 func TestTypeToIdentifierStable(t *testing.T) {
 	k := newTestKey(t, "")
 	assert.Equal(t, "plugin", k.TypeToIdentifier())

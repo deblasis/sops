@@ -2,6 +2,9 @@ package plugin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -38,7 +41,9 @@ func (k *MasterKey) TypeToIdentifier() string { return "plugin" }
 
 // dedup in config.go keys off this: binary + key identity, never type alone.
 // ExpectedKeyRef fallback keeps identity stable from creation through decryption,
-// since KeyRef stays empty until the plugin answers.
+// since KeyRef stays empty until the plugin answers. Without any key ref, a
+// digest of the (sorted, deterministic) marshaled config distinguishes
+// same-binary keys.
 func (k *MasterKey) ToString() string {
 	ref := k.KeyRef
 	if ref == "" {
@@ -46,6 +51,12 @@ func (k *MasterKey) ToString() string {
 	}
 	if ref != "" {
 		return k.BinaryName + ":" + ref
+	}
+	if len(k.Config) > 0 {
+		if b, err := json.Marshal(k.Config); err == nil {
+			sum := sha256.Sum256(b)
+			return k.BinaryName + ":" + hex.EncodeToString(sum[:4])
+		}
 	}
 	return k.BinaryName
 }

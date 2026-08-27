@@ -141,7 +141,7 @@ type keyGroup struct {
 	Vault   []string          `yaml:"hc_vault"`
 	Age     []string          `yaml:"age"`
 	PGP     []string          `yaml:"pgp"`
-	Plugin  []pluginKeyConfig `yaml:"plugins,omitempty"`
+	Plugin  []pluginKeyConfig `yaml:"plugins"`
 }
 
 type pluginKeyConfig struct {
@@ -206,7 +206,7 @@ type creationRule struct {
 	UnencryptedCommentRegex string            `yaml:"unencrypted_comment_regex"`
 	EncryptedCommentRegex   string            `yaml:"encrypted_comment_regex"`
 	MACOnlyEncrypted        bool              `yaml:"mac_only_encrypted"`
-	Plugin                  []pluginKeyConfig `yaml:"plugins,omitempty"`
+	Plugin                  []pluginKeyConfig `yaml:"plugins"`
 }
 
 // Helper methods to safely extract keys as []string
@@ -380,23 +380,26 @@ func extractMasterKeys(group keyGroup) (sops.KeyGroup, error) {
 	return deduplicateKeygroup(keyGroup), nil
 }
 
-// cap plugin config so one rule can't balloon the config file in memory
+// per-key sanity cap on plugin config size handed to plugins
 const maxPluginConfigBytes = 64 * 1024
-const defaultPluginTimeout = 30 * time.Second
 
 func pluginMasterKeyFromConfig(p pluginKeyConfig) (*plugin.MasterKey, error) {
 	b, err := json.Marshal(p.Config)
 	if err != nil {
-		return nil, fmt.Errorf("plugin %s: config not serializable: %w", p.Binary, err)
+		return nil, fmt.Errorf("invalid plugin config for %s: %w", p.Binary, err)
 	}
 	if len(b) > maxPluginConfigBytes {
 		return nil, fmt.Errorf("plugin %s: config exceeds %d bytes", p.Binary, maxPluginConfigBytes)
 	}
-	timeout := defaultPluginTimeout
+	// zero timeout falls back to the plugin package default at runtime
+	var timeout time.Duration
 	if p.Timeout != "" {
 		d, err := time.ParseDuration(p.Timeout)
 		if err != nil {
-			return nil, fmt.Errorf("plugin %s: bad timeout %q: %w", p.Binary, p.Timeout, err)
+			return nil, fmt.Errorf("invalid timeout %q for plugin %s: %w", p.Timeout, p.Binary, err)
+		}
+		if d <= 0 {
+			return nil, fmt.Errorf("invalid timeout %q for plugin %s: must be positive", p.Timeout, p.Binary)
 		}
 		timeout = d
 	}

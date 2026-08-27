@@ -993,7 +993,8 @@ func TestLoadConfigFileWithPluginKeyGroups(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "ocikms", pk.BinaryName)
 	assert.Equal(t, "ocid1.key.oc1..new", pk.ExpectedKeyRef)
-	assert.Equal(t, 30*time.Second, pk.Timeout)
+	// no explicit timeout: zero here, runtime falls back to the plugin default
+	assert.Equal(t, time.Duration(0), pk.Timeout)
 }
 
 func TestPluginConfigTooLarge(t *testing.T) {
@@ -1007,7 +1008,8 @@ creation_rules:
 `, strings.Repeat("a", 70*1024)))
 	_, err := parseCreationRuleForFile(parseConfigFile(confBytes, t), "/conf/path", "whatever", nil)
 	assert.NotNil(t, err)
-	assert.Contains(t, err.Error(), "exceeds 65536")
+	assert.Contains(t, err.Error(), "plugin ocikms")
+	assert.Contains(t, err.Error(), "exceeds")
 }
 
 var sampleConfigWithBadPluginTimeout = []byte(`
@@ -1048,5 +1050,77 @@ func TestPluginDedupKeepsDistinctKeyRefs(t *testing.T) {
 	assert.Len(t, groups, 1)
 	assert.Len(t, groups[0], 2)
 	refs := []string{groups[0][0].(*plugin.MasterKey).ExpectedKeyRef, groups[0][1].(*plugin.MasterKey).ExpectedKeyRef}
+	assert.Equal(t, []string{"ocid1.key.oc1..ref1", "ocid1.key.oc1..ref2"}, refs)
+}
+
+var sampleConfigWithDuplicateAndDistinctPluginConfigs = []byte(`
+creation_rules:
+  - path_regex: ""
+    key_groups:
+      - plugins:
+          - binary: ocikms
+            config:
+              key_id: ref1
+          - binary: ocikms
+            config:
+              key_id: ref2
+          - binary: ocikms
+            config:
+              key_id: ref1
+`)
+
+func TestPluginDedupKeepsDistinctConfigs(t *testing.T) {
+	conf := configFile{}
+	err := conf.load(sampleConfigWithDuplicateAndDistinctPluginConfigs)
+	assert.Nil(t, err)
+
+	groups, err := getKeyGroupsFromCreationRule(&conf.CreationRules[0], nil)
+	assert.Nil(t, err)
+	assert.Len(t, groups, 1)
+	assert.Len(t, groups[0], 2)
+	confIDs := []string{
+		groups[0][0].(*plugin.MasterKey).Config["key_id"].(string),
+		groups[0][1].(*plugin.MasterKey).Config["key_id"].(string),
+	}
+	assert.Equal(t, []string{"ref1", "ref2"}, confIDs)
+}
+
+var sampleConfigWithNonPositivePluginTimeout = []byte(`
+creation_rules:
+  - path_regex: ""
+    plugins:
+      - binary: ocikms
+        timeout: 0s
+`)
+
+func TestPluginNonPositiveTimeout(t *testing.T) {
+	_, err := parseCreationRuleForFile(parseConfigFile(sampleConfigWithNonPositivePluginTimeout, t), "/conf/path", "whatever", nil)
+	assert.NotNil(t, err)
+	assert.Contains(t, err.Error(), "plugin ocikms")
+	assert.Contains(t, err.Error(), "must be positive")
+}
+
+var sampleConfigWithMergedPluginKeys = []byte(`
+creation_rules:
+  - path_regex: ""
+    key_groups:
+      - merge:
+          - plugins:
+              - binary: ocikms
+                key_ref: ocid1.key.oc1..ref1
+          - plugins:
+              - binary: ocikms
+                key_ref: ocid1.key.oc1..ref2
+`)
+
+func TestPluginKeysThroughMergeGroups(t *testing.T) {
+	conf, err := parseCreationRuleForFile(parseConfigFile(sampleConfigWithMergedPluginKeys, t), "/conf/path", "whatever", nil)
+	assert.Nil(t, err)
+	assert.Len(t, conf.KeyGroups, 1)
+	assert.Len(t, conf.KeyGroups[0], 2)
+	refs := []string{
+		conf.KeyGroups[0][0].(*plugin.MasterKey).ExpectedKeyRef,
+		conf.KeyGroups[0][1].(*plugin.MasterKey).ExpectedKeyRef,
+	}
 	assert.Equal(t, []string{"ocid1.key.oc1..ref1", "ocid1.key.oc1..ref2"}, refs)
 }
