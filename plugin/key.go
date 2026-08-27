@@ -36,10 +36,16 @@ func NewMasterKey(binaryName string, config map[string]any, timeout time.Duratio
 
 func (k *MasterKey) TypeToIdentifier() string { return "plugin" }
 
-// dedup in config.go keys off this: binary + key identity, never type alone
+// dedup in config.go keys off this: binary + key identity, never type alone.
+// ExpectedKeyRef fallback keeps identity stable from creation through decryption,
+// since KeyRef stays empty until the plugin answers.
 func (k *MasterKey) ToString() string {
-	if k.KeyRef != "" {
-		return k.BinaryName + ":" + k.KeyRef
+	ref := k.KeyRef
+	if ref == "" {
+		ref = k.ExpectedKeyRef
+	}
+	if ref != "" {
+		return k.BinaryName + ":" + ref
 	}
 	return k.BinaryName
 }

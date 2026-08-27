@@ -1024,3 +1024,29 @@ func TestPluginBadTimeout(t *testing.T) {
 	assert.Contains(t, err.Error(), "plugin ocikms")
 	assert.Contains(t, err.Error(), "timeout")
 }
+
+var sampleConfigWithDuplicateAndDistinctPluginKeyRefs = []byte(`
+creation_rules:
+  - path_regex: ""
+    key_groups:
+      - plugins:
+          - binary: ocikms
+            key_ref: ocid1.key.oc1..ref1
+          - binary: ocikms
+            key_ref: ocid1.key.oc1..ref2
+          - binary: ocikms
+            key_ref: ocid1.key.oc1..ref1
+`)
+
+func TestPluginDedupKeepsDistinctKeyRefs(t *testing.T) {
+	conf := configFile{}
+	err := conf.load(sampleConfigWithDuplicateAndDistinctPluginKeyRefs)
+	assert.Nil(t, err)
+
+	groups, err := getKeyGroupsFromCreationRule(&conf.CreationRules[0], nil)
+	assert.Nil(t, err)
+	assert.Len(t, groups, 1)
+	assert.Len(t, groups[0], 2)
+	refs := []string{groups[0][0].(*plugin.MasterKey).ExpectedKeyRef, groups[0][1].(*plugin.MasterKey).ExpectedKeyRef}
+	assert.Equal(t, []string{"ocid1.key.oc1..ref1", "ocid1.key.oc1..ref2"}, refs)
+}

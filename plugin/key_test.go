@@ -58,6 +58,13 @@ func TestToStringIncludesIdentity(t *testing.T) {
 	assert.Contains(t, k.ToString(), "testkey/primary")
 }
 
+// at config-parse time only ExpectedKeyRef is set; identity must not collapse
+func TestToStringFallsBackToExpectedKeyRef(t *testing.T) {
+	k := newTestKey(t, "")
+	k.ExpectedKeyRef = "testkey/new"
+	assert.Equal(t, "testplugin:testkey/new", k.ToString())
+}
+
 func TestTypeToIdentifierStable(t *testing.T) {
 	k := newTestKey(t, "")
 	assert.Equal(t, "plugin", k.TypeToIdentifier())
