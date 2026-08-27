@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ var (
 func buildTestPlugin(t *testing.T) string {
 	t.Helper()
 	testPluginOnce.Do(func() {
+		// no cleanup: the binary must outlive every test in the package run
 		dir, err := os.MkdirTemp("", "sops-plugin-test")
 		if err != nil {
 			testPluginErr = err
@@ -31,7 +33,7 @@ func buildTestPlugin(t *testing.T) string {
 		cmd := exec.Command("go", "build", "-o", bin, "../internal/testplugin")
 		cmd.Stderr = os.Stderr
 		if err := cmd.Run(); err != nil {
-			testPluginErr = err
+			testPluginErr = fmt.Errorf("%v (go build -o %s ../internal/testplugin)", err, bin)
 			return
 		}
 		testPluginPath = bin

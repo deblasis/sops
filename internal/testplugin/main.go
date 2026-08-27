@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,13 @@ type respErr struct {
 
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
+	switch mode {
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot":
+	default:
+		// a typo must never silently become a healthy plugin
+		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
+		os.Exit(2)
+	}
 	in := bufio.NewReader(os.Stdin)
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
@@ -61,7 +69,8 @@ func main() {
 	}
 	switch mode {
 	case "exit1_startup":
-		// fail before the handshake: the host's handshake read gets EOF
+		// fail before the handshake: the host's handshake read gets EOF;
+		// exit code 2 is intentional (kubectl convention for auth/config failure)
 		fmt.Fprintln(os.Stderr, "startup broke")
 		os.Exit(2)
 	case "version_high":
@@ -117,12 +126,13 @@ func main() {
 			wrapped := "test.v1." + base64.StdEncoding.EncodeToString(r.Plaintext)
 			writeJSON(out, resp{ID: r.ID, OK: true, Wrapped: wrapped, KeyRef: "testkey/primary"})
 		case "decrypt":
-			raw, err := base64.StdEncoding.DecodeString(trimPrefix(r.Wrapped, "test.v1."))
-			if err != nil {
+			raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(r.Wrapped, "test.v1."))
+			if err == nil {
+				writeJSON(out, resp{ID: r.ID, OK: true, Plaintext: raw})
+			} else {
+				// no continue: every answered request must reach the oneshot exit check below
 				writeJSON(out, respErr{ID: r.ID, OK: false, Error: &perr{Code: "invalid_request", Message: "bad wrapped blob"}})
-				continue
 			}
-			writeJSON(out, resp{ID: r.ID, OK: true, Plaintext: raw})
 		default:
 			writeJSON(out, respErr{ID: r.ID, OK: false, Error: &perr{Code: "unsupported_action", Message: r.Action}})
 		}
@@ -131,13 +141,6 @@ func main() {
 			return // clean exit(0): must not count against restart budget
 		}
 	}
-}
-
-func trimPrefix(s, p string) string {
-	if len(s) >= len(p) && s[:len(p)] == p {
-		return s[len(p):]
-	}
-	return s
 }
 
 func writeJSON(w *bufio.Writer, v any) {
