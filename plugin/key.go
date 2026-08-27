@@ -122,6 +122,9 @@ func (k *MasterKey) timeoutOr() time.Duration {
 	if k.Timeout > 0 {
 		return k.Timeout
 	}
+	if d, ok := globalTimeout(); ok {
+		return d
+	}
 	return defaultTimeout
 }
 

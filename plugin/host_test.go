@@ -15,6 +15,7 @@ import (
 func newTestHost(t *testing.T, mode string) *host {
 	t.Helper()
 	bin := buildTestPlugin(t)
+	allowTestPlugin(t)
 	t.Setenv("SOPS_TESTPLUGIN_MODE", mode)
 	h := newHost("testplugin", bin, 2*time.Second)
 	t.Cleanup(func() { h.kill() })

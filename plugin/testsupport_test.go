@@ -49,3 +49,9 @@ func prependPath(t *testing.T, dir string) {
 	t.Helper()
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
+
+// every spawn passes gateExecution; tests must allowlist the test binary
+func allowTestPlugin(t *testing.T) {
+	t.Helper()
+	writeLocalConfig(t, "plugins:\n  allowed:\n    - testplugin\n")
+}

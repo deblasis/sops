@@ -32,7 +32,7 @@ type host struct {
 	binaryName    string
 	pathOverride  string
 	timeout       time.Duration
-	skipGate      bool // unused here: Task 8 allowlist gate; Task 12 conformance bypass
+	skipGate      bool // Task 12 conformance bypass for the allowlist gate
 	resolvedPath  string
 	cmd           *exec.Cmd
 	stdin         io.WriteCloser
@@ -56,6 +56,11 @@ func (h *host) ResetBudget() {
 }
 
 func (h *host) start(ctx context.Context) error {
+	if !h.skipGate {
+		if err := gateExecution(h.binaryName); err != nil {
+			return err
+		}
+	}
 	path, err := resolvePlugin(h.binaryName, h.pathOverride)
 	if err != nil {
 		return err
