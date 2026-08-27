@@ -139,7 +139,7 @@ func (h *host) readHandshake(ctx context.Context) (handshakeIn, error) {
 	if err != nil {
 		// a raw read error stays distinguishable (io.EOF etc.); timeout and
 		// ctx abandonment are already terminal messages of their own
-		return handshakeIn{}, fmt.Errorf("%w: plugin %s: %v", errStartupFailed, h.binaryName, err)
+		return handshakeIn{}, fmt.Errorf("%w: plugin %s: %w", errStartupFailed, h.binaryName, err)
 	}
 	var hs handshakeIn
 	if err := decodeInto(line, &hs); err != nil {
