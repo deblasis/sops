@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -85,6 +85,7 @@ func main() {
 	writeJSON(out, hsOut{Protocol: "sops-plugin", Version: 1, Plugin: "testplugin", PluginVersion: "1.2.3"})
 
 	nAnswered := 0
+	var lastPlain []byte // echo mode only: the stateful-echo conformance bait
 	for {
 		line, err := in.ReadBytes('\n')
 		if err != nil {
@@ -128,9 +129,21 @@ func main() {
 		}
 		switch r.Action {
 		case "encrypt":
+			lastPlain = r.Plaintext
+			if mode == "echo" {
+				writeJSON(out, resp{ID: r.ID, OK: true, Wrapped: "echo.v1.stored", KeyRef: "echokey/stored"})
+				nAnswered++
+				continue
+			}
 			wrapped := "test.v1." + base64.StdEncoding.EncodeToString(r.Plaintext)
 			writeJSON(out, resp{ID: r.ID, OK: true, Wrapped: wrapped, KeyRef: "testkey/primary"})
 		case "decrypt":
+			if mode == "echo" {
+				// answers the stored plaintext no matter which blob is asked for
+				writeJSON(out, resp{ID: r.ID, OK: true, Plaintext: lastPlain})
+				nAnswered++
+				continue
+			}
 			raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(r.Wrapped, "test.v1."))
 			if err == nil {
 				writeJSON(out, resp{ID: r.ID, OK: true, Plaintext: raw})

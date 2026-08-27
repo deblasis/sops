@@ -33,6 +33,22 @@ func TestConformanceToleratesOneShotPlugin(t *testing.T) {
 	}
 }
 
+func TestConformanceCatchesStatefulEcho(t *testing.T) {
+	// echo mode answers every decrypt with the LAST encrypted plaintext:
+	// the cross-probe decrypt of A after encrypting B must fail
+	bin := buildTestPlugin(t)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "echo")
+	for _, r := range RunConformance(bin) {
+		if r.Name == "roundtrip" {
+			if r.Pass {
+				t.Fatal("stateful-echo plugin must fail the roundtrip check")
+			}
+			return
+		}
+	}
+	t.Fatal("no roundtrip result returned")
+}
+
 func TestConformanceCatchesBrokenBinary(t *testing.T) {
 	// a binary that exits immediately cannot pass conformance
 	bin := buildTestPlugin(t)

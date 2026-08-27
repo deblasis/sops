@@ -39,21 +39,23 @@ func List(w io.Writer) error {
 			if runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(e.Name()), ".exe") {
 				continue // same rule as resolution: native executables only
 			}
+			cand := filepath.Join(dir, e.Name())
+			// a non-executable sops-plugin-foo on PATH would be exactly the
+			// discovery failure this command exists to explain: never list it,
+			// and never let it consume the name of a real executable further
+			// down PATH
+			if !plugin.CheckExecutable(cand) {
+				continue
+			}
 			base := strings.TrimSuffix(e.Name(), filepath.Ext(e.Name()))
 			key := base
 			if runtime.GOOS == "windows" {
 				key = strings.ToLower(base) // PATH lookup is case-insensitive
 			}
 			if seen[key] {
-				continue // first PATH hit wins, mirroring resolution order
+				continue // first executable PATH hit wins, mirroring resolution order
 			}
 			seen[key] = true
-			cand := filepath.Join(dir, e.Name())
-			// a non-executable sops-plugin-foo on PATH would be exactly the
-			// discovery failure this command exists to explain: never list it
-			if !plugin.CheckExecutable(cand) {
-				continue
-			}
 			abs, err := filepath.Abs(cand)
 			if err != nil {
 				abs = cand
