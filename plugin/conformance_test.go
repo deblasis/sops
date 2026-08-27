@@ -21,6 +21,18 @@ func TestConformanceGreenOnTestPlugin(t *testing.T) {
 	}
 }
 
+func TestConformanceToleratesOneShotPlugin(t *testing.T) {
+	// a plugin that exits cleanly after every answer must still pass:
+	// each request respawns, clean exits never count against the budget
+	bin := buildTestPlugin(t)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "oneshot")
+	for _, r := range RunConformance(bin) {
+		if !r.Pass {
+			t.Errorf("%s: %s", r.Name, r.Detail)
+		}
+	}
+}
+
 func TestConformanceCatchesBrokenBinary(t *testing.T) {
 	// a binary that exits immediately cannot pass conformance
 	bin := buildTestPlugin(t)

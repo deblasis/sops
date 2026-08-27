@@ -48,9 +48,15 @@ func List(w io.Writer) error {
 				continue // first PATH hit wins, mirroring resolution order
 			}
 			seen[key] = true
-			abs, err := filepath.Abs(filepath.Join(dir, e.Name()))
+			cand := filepath.Join(dir, e.Name())
+			// a non-executable sops-plugin-foo on PATH would be exactly the
+			// discovery failure this command exists to explain: never list it
+			if !plugin.CheckExecutable(cand) {
+				continue
+			}
+			abs, err := filepath.Abs(cand)
 			if err != nil {
-				abs = filepath.Join(dir, e.Name())
+				abs = cand
 			}
 			names = append(names, key)
 			byName[key] = fmt.Sprintf("%s\t%s\t%s", base, plugin.NewProbe(abs).VersionSummary(), abs)
@@ -70,6 +76,12 @@ func Verify(w io.Writer, binaryPath string) error {
 	abs, err := filepath.Abs(binaryPath)
 	if err != nil {
 		return fmt.Errorf("resolving %q to an absolute path: %w", binaryPath, err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("no such file: %s", abs)
+		}
+		return fmt.Errorf("stat %s: %w", abs, err)
 	}
 	if !plugin.CheckExecutable(abs) {
 		return fmt.Errorf("%s is not a native executable; plugins must be executables (on Windows, .exe)", abs)

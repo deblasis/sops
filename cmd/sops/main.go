@@ -524,7 +524,7 @@ func main() {
 					Name:  "list",
 					Usage: "list plugin binaries discoverable on PATH, with handshake-probed versions",
 					Action: func(c *cli.Context) error {
-						return pluginscmd.List(os.Stdout)
+						return pluginscmd.List(c.App.Writer)
 					},
 				},
 				{
@@ -535,7 +535,7 @@ func main() {
 						if c.NArg() < 1 {
 							return common.NewExitError("Error: no plugin binary specified", codes.NoFileSpecified)
 						}
-						if err := pluginscmd.Verify(os.Stdout, c.Args()[0]); err != nil {
+						if err := pluginscmd.Verify(c.App.Writer, c.Args()[0]); err != nil {
 							return common.NewExitError(err, codes.ErrorGeneric)
 						}
 						return nil
