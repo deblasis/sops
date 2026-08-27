@@ -93,9 +93,11 @@ Field meanings:
 - `protocol`: MUST be exactly the string `sops-plugin`.
 - `max_version`: the maximum protocol version SOPS supports.
 - `version`: the protocol version the plugin will speak. MUST be at least 1
-  and MUST NOT exceed `max_version`. SOPS errors only on a reply that is
-  greater than its maximum (or less than 1), a wrong `protocol` string, or an
-  empty `plugin` name.
+  and MUST NOT exceed `max_version`. As far as the version fields go, SOPS
+  accepts any reply in the range 1..max_version and refuses anything
+  outside it. (Separately from versioning, a handshake also fails on a
+  wrong `protocol` string, an empty `plugin` name, a non-JSON or invalid
+  first line, or a timeout, per sections 3 and 7.)
 - `plugin`: the plugin's own name, for diagnostics. Non-empty.
 - `plugin_version`: the plugin's version, semver-style (`1.2.3`, `v1.2.3`).
   SOPS records it in file metadata; `sops plugins verify` requires it to look
@@ -246,7 +248,10 @@ The wrapped key is opaque to SOPS: an arbitrary non-empty string up to the
 - Version prefix. The wrapped value MUST begin with a versioned prefix so a
   plugin can evolve its format and a corrupted blob is detectable. The
   convention is `<name>.v1.<payload>`, for example
-  `myplugin.v1.z7f3...`. The prefix is what lets the plugin distinguish
+  `myplugin.v1.z7f3...`, where `<name>` is the plugin's BINARY name
+  (the `binary:` value in `.sops.yaml`, that is, the suffix of
+  `sops-plugin-myplugin`), not the handshake `plugin` string. The
+  prefix is what lets the plugin distinguish
   "foreign or corrupt blob" (`invalid_request`) from "my blob, backend
   unreachable" (`key_unavailable`).
 - Base64 payload. If the wrapped value contains binary ciphertext, encode
@@ -334,8 +339,9 @@ respawn path self-heals this.) Other POSIX systems get the process group
 only; Windows has no equivalent, so a hard-killed SOPS can leave a plugin
 process behind until it notices stdin closing.
 
-`sops edit` counts as two key operations on the same metadata (a decrypt,
-then the re-wrap on save), each with its own restart budget.
+For `sops edit`, only the decrypt is a plugin key operation (the save
+reuses the existing wrapped keys; master keys are not re-wrapped when
+editing).
 
 ## 11. Interaction with sops
 
@@ -386,13 +392,17 @@ Config NEVER appears in metadata. The wrapped blob (`enc`) is capped at
 Re-encryption. Editing an encrypted file reuses the wrapped keys already
 in metadata; a key that already has a wrapped value is not re-wrapped.
 Fresh config reaches a plugin only through the creation rule matched by
-path, which is what `sops updatekeys` does: it diffs the metadata keys
+path, which is what `sops updatekeys` applies: it diffs the metadata keys
 against the rule's key groups (a plugin key's identity is binary name
 plus key reference, falling back to a digest of the serialized config
-when no key reference exists), drops and re-wraps what differs, and
-leaves common keys' wrapped values untouched. A file whose path matches no creation rule fails
-`updatekeys` with an error, leaving the file and its existing wrapped keys
-unchanged.
+when no key reference exists). If nothing differs, the file is left
+alone. If anything differs, updatekeys replaces the metadata key groups
+with the rule's fresh keys and re-wraps ALL of them, common keys
+included: your plugin IS invoked for a key whose identity did not
+change, with the rule's config, and produces a new wrapped value; only
+the key's identity is preserved, never its old wrapped blob. A file
+whose path matches no creation rule fails `updatekeys` with an error,
+leaving the file and its existing wrapped keys unchanged.
 
 Rotation. `NeedsRotation` compares the key reference recorded in metadata
 against the rule's `key_ref`: if they differ, sops reports the file as

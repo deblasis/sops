@@ -76,7 +76,7 @@ func resolvePlugin(binaryName, pathOverride string) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("%w: %s (install it on PATH or set path_override in the plugin config)", errNotFound, exe)
+	return "", fmt.Errorf("%w: %s (install it on PATH or set path in the plugin config)", errNotFound, exe)
 }
 
 func isExecutableFile(path string) bool {
