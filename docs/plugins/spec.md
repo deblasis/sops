@@ -404,6 +404,11 @@ killed via `taskkill /T /F` with a direct process kill as backstop. A
 timed-out request fails the operation immediately and is never resent
 (section 3).
 
+The timeout is per request, never per process: although one plugin binary
+is reused across key operations (section 3), each key operation runs under
+its own key's resolved timeout, independent of which key first spawned the
+shared process.
+
 Child hygiene: on Linux the child is spawned with Pdeathsig SIGKILL so a
 killed SOPS does not orphan a key-holding process. (Known Go runtime
 caveat: the kernel fires Pdeathsig when the forking thread dies, and the

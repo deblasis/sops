@@ -13,13 +13,16 @@ func NewProbe(path string) *Probe { return &Probe{path: path} }
 
 type Probe struct{ path string }
 
+// probeTimeout bounds the read-only handshake probe behind plugins list.
+const probeTimeout = 3 * time.Second
+
 // VersionSummary starts the binary, reads the handshake, and reports what it
 // advertised. Never panics or blocks beyond a short timeout.
 func (p *Probe) VersionSummary() string {
-	h := newHost("probe", p.path, 3*time.Second)
+	h := newHost("probe", p.path)
 	h.skipGate = true
 	defer h.kill()
-	if err := h.start(context.Background()); err != nil {
+	if err := h.start(context.Background(), probeTimeout); err != nil {
 		return fmt.Sprintf("unreachable: %v", err)
 	}
 	return fmt.Sprintf("protocol %d, plugin %s %s", protocolVersion, h.pluginName, h.pluginVersion)

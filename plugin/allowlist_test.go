@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,12 +74,12 @@ func TestGateBypassForConformance(t *testing.T) {
 	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
 	t.Setenv("SOPS_LOCAL_CONFIG", "")
 
-	h := newHost("testplugin", bin, 2*time.Second)
+	h := newHost("testplugin", bin)
 	h.skipGate = true
 	t.Cleanup(func() { h.kill() })
-	require.NoError(t, h.start(context.Background()))
+	require.NoError(t, h.start(context.Background(), testTimeout))
 
-	resp, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
+	resp, err := h.do(context.Background(), testTimeout, request{Action: "encrypt", Plaintext: []byte("k")})
 	require.NoError(t, err)
 	require.True(t, resp.OK)
 }

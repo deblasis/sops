@@ -239,6 +239,37 @@ func TestStderrSurfacedAtWarnAfterCompletedOps(t *testing.T) {
 	assert.Contains(t, warned[1], "handling decrypt")
 }
 
+// the timeout is per operation, not a property of the shared host: a key
+// borrowing a host first spawned under a much larger timeout must still fail
+// on its own (much shorter) deadline, never on the first spawner's. k1 uses
+// oneshot so the borrowed host is left holding a cleanly exited child: k2's
+// request breaks its pipe, the clean-exit respawn path runs, and the fresh
+// child (mode "never") hangs.
+func TestTimeoutIsPerOperationNotFirstSpawners(t *testing.T) {
+	bin := buildTestPlugin(t)
+	allowTestPlugin(t, bin)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "oneshot")
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
+
+	// first key spawns the shared host under a generous 10s
+	k1 := NewMasterKey("testplugin", nil, 10*time.Second, bin)
+	require.NoError(t, k1.Encrypt([]byte("datakey-0000000000000000")))
+
+	// the respawned process hangs: the second key's 500ms deadline must win
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "never")
+	k2 := NewMasterKey("testplugin", map[string]any{"other": true}, 500*time.Millisecond, bin)
+	start := time.Now()
+	err := k2.Encrypt([]byte("datakey-0000000000000000"))
+	require.Error(t, err)
+	// the error must name k2's own deadline; under the first spawner's 10s it
+	// would read "timeout after 10s"
+	assert.Contains(t, err.Error(), "timeout after 500ms")
+	// the wall bound is loose on purpose: Windows tree-kill teardown runs
+	// after the deadline fires and can burn its own bounded seconds
+	assert.Less(t, time.Since(start), 8*time.Second, "the per-op timeout must beat the first spawner's 10s")
+}
+
 // process reuse: two MasterKeys on the same binary+path must share one plugin
 // process. The procid mode bakes a per-process counter into key_ref, so equal
 // refs prove one process and a changed ref proves a fresh spawn. The counter

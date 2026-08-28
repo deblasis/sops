@@ -98,8 +98,8 @@ func (k *MasterKey) Encrypt(dataKey []byte) error {
 	// borrow, do not build: one host per binary per sops invocation, reused
 	// across key operations (the age-plugin connection-reuse pattern); do()
 	// serializes operations through the shared process
-	h := registry.borrow(k.BinaryName, k.PathOverride, k.timeoutOr())
-	resp, err := h.do(requestContext(), request{Action: "encrypt", Config: k.Config, Plaintext: dataKey})
+	h := registry.borrow(k.BinaryName, k.PathOverride)
+	resp, err := h.do(requestContext(), k.timeoutOr(), request{Action: "encrypt", Config: k.Config, Plaintext: dataKey})
 	if err != nil {
 		registry.discard(h)
 		return err
@@ -124,8 +124,8 @@ func (k *MasterKey) Decrypt() ([]byte, error) {
 		// fail before spawn: a keyless decrypt is caller error, not plugin work
 		return nil, fmt.Errorf("plugin %s: no wrapped key to decrypt", k.BinaryName)
 	}
-	h := registry.borrow(k.BinaryName, k.PathOverride, k.timeoutOr())
-	resp, err := h.do(requestContext(), request{Action: "decrypt", Wrapped: k.WrappedKey})
+	h := registry.borrow(k.BinaryName, k.PathOverride)
+	resp, err := h.do(requestContext(), k.timeoutOr(), request{Action: "decrypt", Wrapped: k.WrappedKey})
 	if err != nil {
 		registry.discard(h)
 		return nil, err
@@ -162,22 +162,23 @@ type hostRegistry struct {
 var registry = &hostRegistry{hosts: map[hostKey]*host{}}
 
 // borrow returns the cached host for the binary, creating (but not spawning)
-// one on first use; the spawn and handshake happen inside do.
-func (r *hostRegistry) borrow(binaryName, pathOverride string, timeout time.Duration) *host {
+// one on first use; the spawn and handshake happen inside do, under the
+// calling operation's own timeout.
+func (r *hostRegistry) borrow(binaryName, pathOverride string) *host {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	k := hostKey{binaryName, pathOverride}
 	if h, ok := r.hosts[k]; ok {
 		return h
 	}
-	h := newHost(binaryName, pathOverride, timeout)
+	h := newHost(binaryName, pathOverride)
 	r.hosts[k] = h
 	return h
 }
 
-// release returns a host after a successful operation. The timeout of the
-// key that first spawned the host sticks for its lifetime: swapping it per
-// operation would race the in-flight operation's deadline.
+// release returns a host after a successful operation. The host holds no
+// timeout state, so there is nothing to reconcile between keys: whichever
+// key runs the next operation brings its own deadline.
 func (r *hostRegistry) release(h *host) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

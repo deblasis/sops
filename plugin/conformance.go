@@ -55,11 +55,11 @@ func RunConformance(path string, config map[string]any) []ConformanceResult {
 	if validateBinaryName(name) != nil {
 		name = "conformance"
 	}
-	h := newHost(name, path, conformanceTimeout)
+	h := newHost(name, path)
 	h.skipGate = true
 	defer h.kill()
 
-	if err := h.start(ctx); err != nil {
+	if err := h.start(ctx, conformanceTimeout); err != nil {
 		res[0].fail(err.Error())
 		for i := 1; i < len(res); i++ {
 			res[i].fail("not run: handshake failed")
@@ -88,7 +88,7 @@ func RunConformance(path string, config map[string]any) []ConformanceResult {
 }
 
 func runRoundTrip(ctx context.Context, h *host, a, b []byte, config map[string]any, r *ConformanceResult) {
-	encA, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: a})
+	encA, err := h.do(ctx, conformanceTimeout, request{Action: "encrypt", Config: config, Plaintext: a})
 	switch {
 	case err != nil:
 		r.fail(err.Error())
@@ -100,7 +100,7 @@ func runRoundTrip(ctx context.Context, h *host, a, b []byte, config map[string]a
 		r.fail("encrypt ok but wrapped is empty or equals the plaintext")
 		return
 	}
-	encB, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: b})
+	encB, err := h.do(ctx, conformanceTimeout, request{Action: "encrypt", Config: config, Plaintext: b})
 	switch {
 	case err != nil:
 		r.fail(err.Error())
@@ -114,7 +114,7 @@ func runRoundTrip(ctx context.Context, h *host, a, b []byte, config map[string]a
 	}
 	// decrypt in the same order as encrypted: a plugin that stores and echoes
 	// the last plaintext returns B for wrappedA and fails here
-	decA, err := h.do(ctx, request{Action: "decrypt", Wrapped: encA.Wrapped})
+	decA, err := h.do(ctx, conformanceTimeout, request{Action: "decrypt", Wrapped: encA.Wrapped})
 	switch {
 	case err != nil:
 		r.fail(err.Error())
@@ -126,7 +126,7 @@ func runRoundTrip(ctx context.Context, h *host, a, b []byte, config map[string]a
 		r.fail("decrypt ok but plaintext differs from probe A (stateful echo?)")
 		return
 	}
-	decB, err := h.do(ctx, request{Action: "decrypt", Wrapped: encB.Wrapped})
+	decB, err := h.do(ctx, conformanceTimeout, request{Action: "decrypt", Wrapped: encB.Wrapped})
 	switch {
 	case err != nil:
 		r.fail(err.Error())
@@ -142,7 +142,7 @@ func runRoundTrip(ctx context.Context, h *host, a, b []byte, config map[string]a
 }
 
 func runErrorShape(ctx context.Context, h *host, r *ConformanceResult) {
-	dec, err := h.do(ctx, request{Action: "decrypt", Wrapped: bogusWrapped})
+	dec, err := h.do(ctx, conformanceTimeout, request{Action: "decrypt", Wrapped: bogusWrapped})
 	switch {
 	case err != nil:
 		// a bogus blob must get an answer, never a transport failure
@@ -161,7 +161,7 @@ func runErrorShape(ctx context.Context, h *host, r *ConformanceResult) {
 }
 
 func runRepeat(ctx context.Context, h *host, probe []byte, config map[string]any, r *ConformanceResult) {
-	if resp, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: probe}); err != nil {
+	if resp, err := h.do(ctx, conformanceTimeout, request{Action: "encrypt", Config: config, Plaintext: probe}); err != nil {
 		r.fail(fmt.Sprintf("session reuse: %v", err))
 		return
 	} else if !resp.OK {
@@ -169,7 +169,7 @@ func runRepeat(ctx context.Context, h *host, probe []byte, config map[string]any
 		return
 	}
 	h.kill() // force a death: the next request must respawn and still succeed
-	if resp, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: probe}); err != nil {
+	if resp, err := h.do(ctx, conformanceTimeout, request{Action: "encrypt", Config: config, Plaintext: probe}); err != nil {
 		r.fail(fmt.Sprintf("after respawn: %v", err))
 		return
 	} else if !resp.OK {

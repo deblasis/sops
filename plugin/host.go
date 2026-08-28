@@ -30,11 +30,13 @@ var (
 )
 
 // host owns one plugin binary. Lockstep: a single outstanding request, so
-// framing can never interleave. All state is guarded by mu.
+// framing can never interleave. All state is guarded by mu. The host carries
+// no timeout of its own: every operation runs under the deadline its caller
+// passes to do(), so a shared process serves each key under that key's own
+// timeout (spec section 10).
 type host struct {
 	binaryName    string
 	pathOverride  string
-	timeout       time.Duration
 	skipGate      bool // diagnostics (verify, probe) name the binary explicitly; they bypass the allowlist gate
 	resolvedPath  string
 	cmd           *exec.Cmd
@@ -48,11 +50,11 @@ type host struct {
 	mu            sync.Mutex
 }
 
-func newHost(binaryName, pathOverride string, timeout time.Duration) *host {
-	return &host{binaryName: binaryName, pathOverride: pathOverride, timeout: timeout}
+func newHost(binaryName, pathOverride string) *host {
+	return &host{binaryName: binaryName, pathOverride: pathOverride}
 }
 
-func (h *host) start(ctx context.Context) error {
+func (h *host) start(ctx context.Context, timeout time.Duration) error {
 	path, err := resolvePlugin(h.binaryName, h.pathOverride)
 	if err != nil {
 		return err
@@ -95,7 +97,7 @@ func (h *host) start(ctx context.Context) error {
 		h.killLocked()
 		return fmt.Errorf("%w: plugin %s: handshake write: %v%s", errStartupFailed, h.binaryName, err, h.startupStderr())
 	}
-	hs, err := h.readHandshake(ctx)
+	hs, err := h.readHandshake(ctx, timeout)
 	if err != nil {
 		// a clean exit (status 0) before any handshake byte is respawnable,
 		// same as a clean exit mid-session; every other handshake failure
@@ -123,10 +125,10 @@ func (h *host) start(ctx context.Context) error {
 	return nil
 }
 
-// readLineWithin reads one stdout line under the host timeout and ctx. The
-// reader is captured before launching so an abandoned goroutine can never
-// touch the NEXT spawn's stdout after a timeout respawn.
-func (h *host) readLineWithin(ctx context.Context, what string) ([]byte, error) {
+// readLineWithin reads one stdout line under the operation's deadline and
+// ctx. The reader is captured before launching so an abandoned goroutine can
+// never touch the NEXT spawn's stdout after a timeout respawn.
+func (h *host) readLineWithin(ctx context.Context, timeout time.Duration, what string) ([]byte, error) {
 	type readRes struct {
 		line []byte
 		err  error
@@ -137,14 +139,14 @@ func (h *host) readLineWithin(ctx context.Context, what string) ([]byte, error) 
 		line, err := readLine(rdr, maxLineBytes)
 		ch <- readRes{line, err}
 	}()
-	timer := time.NewTimer(h.timeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case r := <-ch:
 		return r.line, r.err
 	case <-timer.C:
 		h.killLocked()
-		return nil, fmt.Errorf("plugin %s: timeout after %v during %s", h.binaryName, h.timeout, what)
+		return nil, fmt.Errorf("plugin %s: timeout after %v during %s", h.binaryName, timeout, what)
 	case <-ctx.Done():
 		h.killLocked()
 		return nil, fmt.Errorf("plugin %s: abandoned during %s: %w", h.binaryName, what, ctx.Err())
@@ -155,27 +157,27 @@ func (h *host) readLineWithin(ctx context.Context, what string) ([]byte, error) 
 // as reads: a child that hands successfully but never reads stdin must not
 // pin sops on a full pipe. The writer handle is captured so an abandoned
 // goroutine can only ever touch this spawn's stdin.
-func (h *host) writeLineWithin(ctx context.Context, req request) error {
+func (h *host) writeLineWithin(ctx context.Context, timeout time.Duration, req request) error {
 	type writeRes struct{ err error }
 	ch := make(chan writeRes, 1)
 	w := h.stdin
 	go func() { ch <- writeRes{writeLine(w, req)} }()
-	timer := time.NewTimer(h.timeout)
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case r := <-ch:
 		return r.err
 	case <-timer.C:
 		h.killLocked()
-		return fmt.Errorf("plugin %s: %w after %v writing %q request", h.binaryName, errWriteTimeout, h.timeout, req.Action)
+		return fmt.Errorf("plugin %s: %w after %v writing %q request", h.binaryName, errWriteTimeout, timeout, req.Action)
 	case <-ctx.Done():
 		h.killLocked()
 		return fmt.Errorf("plugin %s: abandoned writing %q request: %w", h.binaryName, req.Action, ctx.Err())
 	}
 }
 
-func (h *host) readHandshake(ctx context.Context) (handshakeIn, error) {
-	line, err := h.readLineWithin(ctx, "handshake")
+func (h *host) readHandshake(ctx context.Context, timeout time.Duration) (handshakeIn, error) {
+	line, err := h.readLineWithin(ctx, timeout, "handshake")
 	if err != nil {
 		// a raw read error stays distinguishable (io.EOF etc.); timeout and
 		// ctx abandonment are already terminal messages of their own
@@ -226,9 +228,10 @@ func (h *host) crashError(action string, werr error) error {
 		h.binaryName, code, action, h.startupStderr())
 }
 
-// do runs one lockstep request. Failure accounting is per call: the host is
-// shared across operations (see key.go), so nothing may leak from one
-// operation's misbehavior into the next.
+// do runs one lockstep request under the caller's timeout. Failure accounting
+// is per call: the host is shared across operations (see key.go), so nothing
+// may leak from one operation's misbehavior into the next, and the deadline
+// is per operation too, never stored on the shared host.
 //   - clean exit (status 0, no partial line) before any response byte,
 //     whether it reads as EOF on stdout or a broken stdin pipe: respawn and
 //     resend, never counted; clean exits after complete responses likewise
@@ -238,7 +241,7 @@ func (h *host) crashError(action string, werr error) error {
 //   - garbage output, partial lines, timeouts, id mismatches: fail
 //     immediately, never resent (a resend could double-apply)
 //   - ok:false is an answer, not a respawn trigger
-func (h *host) do(ctx context.Context, req request) (*response, error) {
+func (h *host) do(ctx context.Context, timeout time.Duration, req request) (*response, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	attempts := 0
@@ -251,7 +254,7 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 				h.binaryName, attempts-1, req.Action, h.startupStderr())
 		}
 		if h.cmd == nil || h.cmd.Process == nil {
-			if err := h.start(ctx); err != nil {
+			if err := h.start(ctx, timeout); err != nil {
 				if errors.Is(err, errHandshakeCleanExit) {
 					// clean exit at the handshake: respawn within the spawn
 					// cap above, never counted
@@ -262,7 +265,7 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 		}
 		req.ID = h.nextID
 		h.nextID++
-		if err := h.writeLineWithin(ctx, req); err != nil {
+		if err := h.writeLineWithin(ctx, timeout, req); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err // caller gave up: not plugin misbehavior
 			}
@@ -280,7 +283,7 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 			}
 			return nil, h.crashError(req.Action, werr)
 		}
-		resp, err := h.readResponse(ctx, req.ID, req.Action)
+		resp, err := h.readResponse(ctx, timeout, req.ID, req.Action)
 		if err == nil {
 			return resp, nil
 		}
@@ -305,8 +308,8 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 
 // readResponse reads one response line. It returns io.EOF (unwrapped) when the
 // child died before emitting any byte: do() treats that as respawnable.
-func (h *host) readResponse(ctx context.Context, id int64, action string) (*response, error) {
-	line, err := h.readLineWithin(ctx, fmt.Sprintf("%q response", action))
+func (h *host) readResponse(ctx context.Context, timeout time.Duration, id int64, action string) (*response, error) {
+	line, err := h.readLineWithin(ctx, timeout, fmt.Sprintf("%q response", action))
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			return nil, io.EOF
