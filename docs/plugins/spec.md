@@ -63,7 +63,8 @@ Two disclosures are accepted:
 
 SOPS spawns one process per distinct plugin binary per key operation. The
 protocol is lockstep: exactly one outstanding request at a time, so lines on
-stdout can never interleave.
+stdout can never interleave. SOPS closes the plugin's stdin when it is done
+with the process; a plugin exits 0 on stdin EOF.
 
 Respawn tolerance:
 
@@ -123,9 +124,11 @@ new action names). Both sides MUST ignore unknown JSON fields. A plugin that
 receives an action it does not implement MUST answer with the
 `unsupported_action` error code (section 6), not exit or hang.
 
-SOPS-side commitment: once a v2-speaking SOPS ships, SOPS keeps accepting
-version 1 handshakes for at least two years after that release. A plugin
-written against v1 therefore stays usable for that whole window, and the
+SOPS-side commitment: once a v2-speaking SOPS ships, SOPS intends to keep
+accepting version 1 handshakes for at least two years after that release,
+as a policy subject to maintainer ratification rather than a formal
+guarantee. A plugin written against v1 therefore stays usable for that
+whole window, and the
 additive-only policy means a v1 plugin never needs changes it did not choose.
 
 The handshake repeats after every respawn. Request ids restart at 1 on each
@@ -232,16 +235,18 @@ answered request never triggers exit-code inspection):
 - 2: authentication or configuration failure at startup, before the
   handshake (the kubectl convention). SOPS does not parse exit codes, but a
   startup failure SHOULD exit non-zero and write the reason to stderr; SOPS
-  surfaces the handshake read failure, and captured stderr accompanies
-  restart-budget exhaustion errors. Whatever a plugin writes to stderr is
-  also surfaced (truncated to 1 KiB) after every completed key operation,
-  so warnings printed during an otherwise healthy session reach the user.
+  surfaces the handshake read failure with the captured stderr attached,
+  and captured stderr also accompanies restart-budget exhaustion errors.
+  Whatever a plugin writes to stderr is also surfaced after every completed
+  key operation, as a 1 KiB prefix of the 8 KiB per-process capture
+  (section 7), so warnings printed during an otherwise healthy session
+  reach the user.
 
 ## 7. Framing
 
 - Exactly one JSON object per line, terminated by a single LF (`0x0A`).
-- CRLF is forbidden: a CR byte anywhere in a line is a violation. Plugins
-  MUST NOT emit CRLF, and SOPS rejects it.
+- CRLF is forbidden: a CR byte anywhere in a line SOPS reads from the
+  plugin is a violation. Plugins MUST NOT emit CRLF, and SOPS rejects it.
 - No blank lines.
 - Exactly one response line per request line. No unsolicited output: stdout
   is protocol only, ever. Everything else (logging, progress, warnings)
@@ -267,7 +272,9 @@ Size caps, enforced by SOPS:
 - The wrapped blob in file metadata is capped at 64 KiB (rejected when the
   encrypted file is loaded, before any process spawns).
 - Captured stderr is capped at 8 KiB per process; anything beyond is
-  truncated (and never blocks the plugin: SOPS discards the excess).
+  truncated (and never blocks the plugin: SOPS discards the excess). Of
+  that capture, at most 1 KiB is ever surfaced per completed operation
+  (section 6).
 - Protocol-violation error messages include at most a 256-byte prefix of the
   offending stdout line, so garbage that might echo key material is never
   shown whole.
@@ -339,11 +346,16 @@ plugins:
     - /usr/local/lib/sops-plugins/sops-plugin-myplugin
 ```
 
-Entries are binary names (for PATH resolution) or absolute paths (for
-`path:` overrides). When a `path:` override is in play, the allowlist must
-contain the resolved absolute path EXACTLY: a name entry authorizes PATH
-resolution only and can never authorize an absolute path that repository
-content picked.
+Entries use the same prefix-stripped form as the `binary:` field
+(`myplugin` for `sops-plugin-myplugin`), for PATH resolution, or absolute
+paths, for `path:` overrides. When a `path:` override is in play, the
+allowlist must contain the resolved absolute path EXACTLY, in
+native-separator form (backslashes on Windows): a name entry authorizes
+PATH resolution only and can never authorize an absolute path that
+repository content picked. A full roundtrip with a `path:`-override key
+therefore needs BOTH entries: the absolute path entry gates the
+encrypt-side spawn, while decrypt resolves by binary name from PATH
+(metadata carries no path) and needs the name entry.
 
 Every spawn, for encryption and decryption alike, passes this gate. No
 allowlist, or an empty one, blocks every plugin: SOPS fails closed. A
@@ -397,7 +409,7 @@ inside `key_groups`, like any other key type:
 
 ```yaml
 creation_rules:
-  - path_regex: secrets/.*$
+  - path_regex: secrets[/\\].*$
     plugins:
       - binary: myplugin
         key_ref: projects/p/locations/eu/keys/k
@@ -412,6 +424,12 @@ creation_rules:
             config:
               key_id: projects/p/locations/eu/keys/k
 ```
+
+The example matches both separators because paths are matched with the OS's
+native separators (backslashes on Windows), so a portable rule needs both in
+the character class. The no-matching-rule error names neither the separator
+form nor the string that was matched (pre-existing sops behavior), so a
+separator mismatch reads the same as a typo'd regex.
 
 Fields: `binary` (required, the name used for resolution, section 9),
 `path` (optional absolute override), `timeout` (optional), `key_ref`
@@ -447,11 +465,15 @@ alone. If anything differs, updatekeys replaces the metadata key groups
 with the rule's fresh keys and re-wraps ALL of them, common keys
 included: your plugin IS invoked for a key whose identity did not
 change, with the rule's config, and produces a new wrapped value; only
-the key's identity is preserved, never its old wrapped blob. A file
-whose path matches no creation rule fails `updatekeys` with an error,
+the key's identity is preserved, never its old wrapped blob. Before
+changing anything, `updatekeys` prints the pending diff and asks
+`Is this okay? (y/n)`; `--yes` skips the prompt for non-TTY and CI use.
+A file whose path matches no creation rule fails `updatekeys` with an error,
 leaving the file and its existing wrapped keys unchanged.
 
-Rotation. `NeedsRotation` compares the key reference recorded in metadata
+Rotation. `NeedsRotation` is a library-level check with no CLI surface
+today (`sops filestatus` reports only whether a file is encrypted). Where
+a caller consults it, it compares the key reference recorded in metadata
 against the rule's `key_ref`: if they differ, sops reports the file as
 needing rotation. Without a rule `key_ref`, plugin keys are never flagged.
 
@@ -521,6 +543,4 @@ binary cannot be made to simulate those faults on demand.
 
 - v1 (this document): initial protocol specification.
 - v1 wire note: protocol-buffer field 3 of the plugin key message is
-  reserved. It briefly held a wrapped value during development and was
-  removed as write-only before any release; implementations MUST NOT use
-  it and MUST ignore it if set.
+  reserved; implementations MUST NOT use it and MUST ignore it if set.
