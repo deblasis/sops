@@ -167,6 +167,20 @@ func TestContextCancelAbandonsPromptlyWithoutCounting(t *testing.T) {
 	assert.Nil(t, h.cmd, "abandoned child must still be killed")
 }
 
+func TestWriteTimeoutWhenChildNeverReads(t *testing.T) {
+	// a payload far over any pipe buffer: the write cannot complete while
+	// the child refuses to read, so the write deadline must fire
+	h := newTestHost(t, "noread")
+	start := time.Now()
+	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: make([]byte, 256*1024)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+	assert.Contains(t, err.Error(), "encrypt")
+	assert.Less(t, time.Since(start), 4*time.Second)
+	assert.Nil(t, h.cmd, "wedged process must be gone")
+	assert.Equal(t, 1, h.restarts, "a stalled write counts once, then fails")
+}
+
 func TestUnsolicitedLineIsViolation(t *testing.T) {
 	h := newTestHost(t, "unsolicited")
 	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})

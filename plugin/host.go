@@ -25,6 +25,7 @@ var (
 	errStartupFailed      = errors.New("plugin failed during startup")
 	errVersionRefused     = errors.New("plugin protocol version refused")
 	errHandshakeCleanExit = errors.New("plugin exited cleanly before the handshake")
+	errWriteTimeout       = errors.New("request write timed out")
 )
 
 // host owns one plugin binary. Lockstep: a single outstanding request, so
@@ -148,6 +149,29 @@ func (h *host) readLineWithin(ctx context.Context, what string) ([]byte, error) 
 	}
 }
 
+// writeLineWithin writes one request line under the same timeout discipline
+// as reads: a child that hands successfully but never reads stdin must not
+// pin sops on a full pipe. The writer handle is captured so an abandoned
+// goroutine can only ever touch this spawn's stdin.
+func (h *host) writeLineWithin(ctx context.Context, req request) error {
+	type writeRes struct{ err error }
+	ch := make(chan writeRes, 1)
+	w := h.stdin
+	go func() { ch <- writeRes{writeLine(w, req)} }()
+	timer := time.NewTimer(h.timeout)
+	defer timer.Stop()
+	select {
+	case r := <-ch:
+		return r.err
+	case <-timer.C:
+		h.kill()
+		return fmt.Errorf("plugin %s: %w after %v writing %q request", h.binaryName, errWriteTimeout, h.timeout, req.Action)
+	case <-ctx.Done():
+		h.kill()
+		return fmt.Errorf("plugin %s: abandoned writing %q request: %w", h.binaryName, req.Action, ctx.Err())
+	}
+}
+
 func (h *host) readHandshake(ctx context.Context) (handshakeIn, error) {
 	line, err := h.readLineWithin(ctx, "handshake")
 	if err != nil {
@@ -212,7 +236,16 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 		}
 		req.ID = h.nextID
 		h.nextID++
-		if err := writeLine(h.stdin, req); err != nil {
+		if err := h.writeLineWithin(ctx, req); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return nil, err // caller gave up: not plugin misbehavior, do not count
+			}
+			if errors.Is(err, errWriteTimeout) {
+				// a full pipe is plugin misbehavior: counted, never resent
+				h.kill()
+				h.restarts++
+				return nil, err
+			}
 			// stdin broke: either a cleanly-exited one-shot child (EPIPE) or a
 			// real spawn failure; respawn sorts out which without counting
 			h.kill()
