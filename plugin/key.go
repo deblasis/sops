@@ -96,11 +96,8 @@ func (k *MasterKey) Encrypt(dataKey []byte) error {
 	if err != nil {
 		return err
 	}
-	if !resp.OK {
-		if resp.Error != nil {
-			return fmt.Errorf("plugin %s: encrypt: %w", k.BinaryName, resp.Error)
-		}
-		return fmt.Errorf("plugin %s: encrypt: ok:false without error object", k.BinaryName)
+	if err := k.answerError("encrypt", resp); err != nil {
+		return err
 	}
 	if resp.Wrapped == "" {
 		return &pluginError{Code: errCodeInternal, Message: "plugin returned no wrapped key"}
@@ -123,16 +120,34 @@ func (k *MasterKey) Decrypt() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !resp.OK {
-		if resp.Error != nil {
-			return nil, fmt.Errorf("plugin %s: decrypt: %w", k.BinaryName, resp.Error)
-		}
-		return nil, fmt.Errorf("plugin %s: decrypt: ok:false without error object", k.BinaryName)
+	if err := k.answerError("decrypt", resp); err != nil {
+		return nil, err
 	}
 	if len(resp.Plaintext) == 0 {
 		return nil, &pluginError{Code: errCodeInternal, Message: "plugin returned no plaintext"}
 	}
 	return resp.Plaintext, nil
+}
+
+// answerError validates the error-object half of the contract on a completed
+// answer. Malformed answers fail the operation plainly (no respawn, no
+// protocol-violation bookkeeping): the plugin answered, it just answered bad.
+func (k *MasterKey) answerError(action string, resp *response) error {
+	if resp.OK {
+		if resp.Error != nil {
+			return fmt.Errorf("plugin %s: %s: ok:true with an error object (code %q, message %q)",
+				k.BinaryName, action, resp.Error.Code, resp.Error.Message)
+		}
+		return nil
+	}
+	if resp.Error == nil {
+		return fmt.Errorf("plugin %s: %s: ok:false without an error object", k.BinaryName, action)
+	}
+	if resp.Error.Code == "" || resp.Error.Message == "" {
+		return fmt.Errorf("plugin %s: %s: ok:false with an incomplete error object (code %q, message %q)",
+			k.BinaryName, action, resp.Error.Code, resp.Error.Message)
+	}
+	return fmt.Errorf("plugin %s: %s: %w", k.BinaryName, action, resp.Error)
 }
 
 func (k *MasterKey) timeoutOr() time.Duration {

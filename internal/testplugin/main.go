@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -118,6 +118,18 @@ func main() {
 			}
 		case "authfail":
 			writeJSON(out, respErr{ID: r.ID, OK: false, Error: &perr{Code: "auth_failed", Message: "denied"}})
+			continue
+		case "bare_false":
+			// ok:false with no error object at all
+			writeJSON(out, resp{ID: r.ID, OK: false})
+			continue
+		case "incomplete_err":
+			// ok:false with an error object missing its message
+			writeJSON(out, respErr{ID: r.ID, OK: false, Error: &perr{Code: "internal"}})
+			continue
+		case "ok_with_err":
+			// ok:true carrying an error object anyway
+			writeJSON(out, respErr{ID: r.ID, OK: true, Error: &perr{Code: "internal", Message: "should not be here"}})
 			continue
 		case "unflushed":
 			// write response without newline, then hang: host must time out, not accept

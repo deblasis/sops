@@ -112,6 +112,42 @@ func TestEncryptAuthFailureSurfaces(t *testing.T) {
 	assert.Equal(t, errCodeAuthFailed, pe.Code)
 }
 
+// spec section 6: an answer with a malformed error object fails the operation
+// plainly; every shape below is an answer, never a respawn trigger
+func TestMalformedErrorObjectsFailPlainly(t *testing.T) {
+	shapeErrs := map[string]string{
+		// ok:false, complete error object: surfaces as the plugin's error
+		"authfail": "auth_failed",
+		// ok:false, no error object at all
+		"bare_false": "ok:false without an error object",
+		// ok:false, error object missing its message
+		"incomplete_err": "ok:false with an incomplete error object",
+		// ok:true carrying an error object anyway
+		"ok_with_err": "ok:true with an error object",
+	}
+	for mode, want := range shapeErrs {
+		t.Run(mode, func(t *testing.T) {
+			k := newTestKey(t, mode)
+			err := k.Encrypt([]byte("datakey-0000000000000000"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), want)
+			assert.Contains(t, err.Error(), "encrypt")
+		})
+	}
+
+	// same shapes must fail decrypt the same way
+	for mode, want := range shapeErrs {
+		t.Run(mode+"/decrypt", func(t *testing.T) {
+			k := newTestKey(t, mode)
+			k.SetEncryptedDataKey([]byte(wrapForTest("datakey-0000000000000000")))
+			_, err := k.Decrypt()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), want)
+			assert.Contains(t, err.Error(), "decrypt")
+		})
+	}
+}
+
 func TestDecryptWithoutWrappedKeyFailsFast(t *testing.T) {
 	// mode "never" hangs on any spawn; a pre-spawn guard returns instantly
 	k := newTestKey(t, "never")
