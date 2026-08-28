@@ -336,11 +336,15 @@ The wrapped key is opaque to SOPS: an arbitrary non-empty string up to the
 - Version prefix. The wrapped value MUST begin with a versioned prefix so a
   plugin can evolve its format and a corrupted blob is detectable. The
   convention is `<name>.v1.<payload>`, for example
-  `myplugin.v1.z7f3...`, where `<name>` is the plugin's name (section 9),
-  not the handshake `plugin` string. The prefix is what lets the plugin
+  `myplugin.v1.z7f3...`, where `<name>` is the plugin's NAME in its
+  prefix-stripped form: `myplugin`, not the installed basename
+  `sops-plugin-myplugin` (section 9), and not the handshake `plugin`
+  string. The prefix is what lets the plugin
   distinguish
   "foreign or corrupt blob" (`invalid_request`) from "my blob, backend
-  unreachable" (`key_unavailable`).
+  unreachable" (`key_unavailable`). The prefix is a plugin-side convention
+  only: SOPS never inspects it and treats the whole wrapped value as opaque,
+  up to the metadata cap.
 - Base64 payload. If the wrapped value contains binary ciphertext, encode
   it as standard padded base64 in the payload section, so the value is a
   clean single-line UTF-8 string.
