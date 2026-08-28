@@ -816,7 +816,7 @@ func (m *Metadata) UpdateMasterKeysWithKeyServices(dataKey []byte, svcs []keyser
 				// caller's own key object so metadata records what the plugin
 				// answered. Other (remote) services keep the wire call.
 				if isPlugin {
-					if lc, isLocal := svc.(keyservice.LocalClient); isLocal {
+					if lc, isLocal := keyservice.InProcess(svc); isLocal {
 						if err := lc.EncryptMasterKey(pk, part); err != nil {
 							keyErrs = append(keyErrs, fmt.Errorf("failed to encrypt new data key with master key %q: %w", key.ToString(), err))
 							continue
@@ -966,7 +966,7 @@ func decryptKey(key keys.MasterKey, svcs []keyservice.KeyServiceClient) ([]byte,
 			// symmetric: the key's identity never crosses the wire); other
 			// services keep the wire call
 			if isPlugin {
-				if lc, isLocal := svc.(keyservice.LocalClient); isLocal {
+				if lc, isLocal := keyservice.InProcess(svc); isLocal {
 					part, err = lc.DecryptMasterKey(pk)
 					decryptErr.errs = append(decryptErr.errs, err)
 					continue

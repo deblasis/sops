@@ -28,6 +28,17 @@ func NewCustomLocalClient(server KeyServiceServer) LocalClient {
 	return LocalClient{Server: server}
 }
 
+// InProcess reports whether svc executes in this process and hands back that
+// client. Callers use it to special-case the local path (plugin key wraps run
+// in-process) without asserting the concrete type themselves.
+func InProcess(svc KeyServiceClient) (*LocalClient, bool) {
+	lc, ok := svc.(LocalClient)
+	if !ok {
+		return nil, false
+	}
+	return &lc, true
+}
+
 // Decrypt processes a decrypt request locally
 // See keyservice/server.go for more details
 func (c LocalClient) Decrypt(ctx context.Context,
