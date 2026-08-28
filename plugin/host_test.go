@@ -192,6 +192,26 @@ func TestUnsolicitedLineIsViolation(t *testing.T) {
 	assert.Equal(t, 1, h.restarts)
 }
 
+// always exits 0 after reading the request: the respawn path must churn
+// through the whole spawn cap and fail cleanly, never hang or panic
+func TestCleanExitBeforeResponseBoundedBySpawnCap(t *testing.T) {
+	h := newTestHost(t, "exit_clean_before_response")
+	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spawn attempts")
+}
+
+// the child read the full request, then died non-zero: the wrap may already
+// have been applied, so the operation must fail at once, naming the exit
+// status and the child's stderr, and never resend
+func TestCrashAfterRequestFailsWithoutResend(t *testing.T) {
+	h := newTestHost(t, "crash_after_request")
+	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 7")
+	assert.Contains(t, err.Error(), "crashed on purpose")
+}
+
 func TestNoKeyLeakInErrors(t *testing.T) {
 	secret := "TOPSECRET-DATA-KEY"
 	b64 := base64.StdEncoding.EncodeToString([]byte(secret))

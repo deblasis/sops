@@ -73,8 +73,15 @@ Respawn tolerance:
   the handshake. One-shot plugins are supported, not tolerated.
 - A clean exit BEFORE any byte of a response has been written (SOPS sees EOF
   on stdout with no partial line) likewise causes a respawn and the request
-  is resent. A broken stdin pipe (EPIPE) while writing a request is treated
-  the same way: the child is gone, respawn and resend.
+  is resent. A broken stdin pipe (EPIPE) while writing a request to a
+  cleanly-exited child is treated the same way: the child is gone, respawn
+  and resend.
+- A NON-ZERO exit before any response byte fails the key operation
+  IMMEDIATELY and the request is never resent, whether SOPS observed the
+  death as EOF on stdout or as a broken stdin pipe: the plugin may have
+  applied the wrap before dying, and a resend could double-apply it. The
+  failure names the exit status and carries the captured stderr
+  (sections 6 and 7).
 - Those non-counted respawns are the ONLY respawns, and they are bounded:
   SOPS makes at most 8 spawn attempts per key operation, then gives up with
   an error, so a plugin that keeps exiting cleanly without answering cannot
@@ -227,8 +234,8 @@ credential failures against cloud KMS backends is how accounts get locked
 out. A plugin that wants retries (for transient backend errors) owns that
 logic itself before answering.
 
-Exit codes (relevant only before or outside the request loop, since an
-answered request never triggers exit-code inspection):
+Exit codes (inspected only when a request went unanswered, since an answered
+request never triggers exit-code inspection):
 
 - 0: clean exit. After a complete response, this is the normal one-shot exit.
 - 1: generic failure mid-protocol.
@@ -236,7 +243,9 @@ answered request never triggers exit-code inspection):
   handshake (the kubectl convention). SOPS does not parse exit codes, but a
   startup failure SHOULD exit non-zero and write the reason to stderr; SOPS
   surfaces the handshake read failure with the captured stderr attached,
-  and captured stderr also accompanies restart-budget exhaustion errors.
+  captured stderr also accompanies restart-budget exhaustion errors, and a
+  non-zero pre-response exit is reported with its status and the captured
+  stderr.
   Whatever a plugin writes to stderr is also surfaced after every completed
   key operation, as a 1 KiB prefix of the 8 KiB per-process capture
   (section 7), so warnings printed during an otherwise healthy session

@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise", "empty_ok":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise", "empty_ok", "exit_clean_before_response", "crash_after_request":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -145,6 +145,15 @@ func main() {
 			// ok:true carrying an error object anyway
 			writeJSON(out, respErr{ID: r.ID, OK: true, Error: &perr{Code: "internal", Message: "should not be here"}})
 			continue
+		case "exit_clean_before_response":
+			// read the request, answer nothing, exit 0: exercises the host's
+			// clean-exit respawn path (bounded by the spawn cap)
+			return
+		case "crash_after_request":
+			// read the full request, then die without answering: a resend
+			// could double-apply a wrap that already happened
+			fmt.Fprintln(os.Stderr, "crashed on purpose")
+			os.Exit(7)
 		case "empty_ok":
 			// ok:true with no payload: exercises the host-side diagnoses that
 			// must name the binary

@@ -191,8 +191,17 @@ func (h *host) readHandshake(ctx context.Context) (handshakeIn, error) {
 // exited with status 0. A child still alive (or dead non-zero) reads as
 // unclean: only an observed clean EOF plus a zero exit status is respawnable.
 func (h *host) exitedCleanly() bool {
+	return h.reap() == nil
+}
+
+// reap tears the child down with exactly one Wait and returns the Wait
+// error: nil iff the child had already exited with status 0. killTree runs
+// first so a child that closed its pipes but lingers cannot outlive the
+// call. Must be called with mu held (every do() path) or from the only
+// goroutine using the host, as in tests and conformance.
+func (h *host) reap() error {
 	if h.cmd == nil || h.cmd.Process == nil {
-		return false
+		return errors.New("plugin process already gone")
 	}
 	killTree(h.cmd)
 	if h.stdin != nil {
@@ -200,13 +209,29 @@ func (h *host) exitedCleanly() bool {
 	}
 	err := h.cmd.Wait()
 	h.cmd, h.stdin, h.stdout = nil, nil, nil
-	return err == nil
+	return err
+}
+
+// crashError explains a child that died non-zero before answering. The exit
+// status and the child's captured stderr are the whole diagnosis; the
+// request is never resent (the wrap may already have been applied).
+func (h *host) crashError(action string, werr error) error {
+	code := -1
+	var ee *exec.ExitError
+	if errors.As(werr, &ee) {
+		code = ee.ExitCode()
+	}
+	return fmt.Errorf("plugin %s: exited with status %d before answering action %q; request not resent%s",
+		h.binaryName, code, action, h.startupStderr())
 }
 
 // do runs one lockstep request. Restart accounting:
-//   - clean exit (EOF, no partial line) before any response byte: respawn and
+//   - clean exit (status 0, no partial line) before any response byte,
+//     whether it reads as EOF on stdout or a broken stdin pipe: respawn and
 //     resend WITHOUT counting; clean exits after complete responses likewise
 //     never count, so one-shot plugins survive any number of keys
+//   - non-zero exit before any response byte: count and fail immediately,
+//     NEVER resend (the wrap may already have been applied)
 //   - garbage output, partial lines, timeouts, id mismatches: count toward
 //     maxRestarts and are never resent (a resend could double-apply)
 //   - ok:false is an answer, not a respawn trigger
@@ -247,18 +272,30 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 				h.restarts++
 				return nil, err
 			}
-			// stdin broke: either a cleanly-exited one-shot child (EPIPE) or a
-			// real spawn failure; respawn sorts out which without counting
-			h.kill()
-			continue
+			// stdin broke mid-write: a child that exited cleanly is
+			// respawnable, one that died non-zero may already have applied
+			// the wrap and must never see the request again
+			werr := h.reap()
+			if werr == nil {
+				continue
+			}
+			h.restarts++
+			return nil, h.crashError(req.Action, werr)
 		}
 		resp, err := h.readResponse(ctx, req.ID, req.Action)
 		if err == nil {
 			return resp, nil
 		}
 		if errors.Is(err, io.EOF) {
-			h.kill()
-			continue // clean death before any response byte: resend on a fresh child
+			// stdout closed before any response byte: whether that is a
+			// respawnable clean exit or a crash that must not be resent is
+			// decided by the reaped exit status, not by the EOF itself
+			werr := h.reap()
+			if werr == nil {
+				continue // clean death before any response byte: resend on a fresh child
+			}
+			h.restarts++
+			return nil, h.crashError(req.Action, werr)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			h.kill()
