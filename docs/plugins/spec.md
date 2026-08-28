@@ -159,12 +159,13 @@ on them from the first SOPS release that does.
   rule this means a plugin written against 1.0 keeps working unmodified on
   every later 1.x, and a v1 plugin never needs changes it did not choose.
 - Deprecation is anchored, not relative (PROPOSED). When a SOPS release
-  adds version 2 support, every SOPS release from that one onward MUST
-  accept version 1 handshakes for the longer of: the four sops minor
-  releases that follow the v2 release, or 18 months counted from the v2
-  release. Removal before the window closes is a release-blocking bug, not
-  a judgment call. Anchoring both bounds to the v2 release keeps the window
-  from shifting as time passes.
+  adds version 2 support, that release MUST accept version 1 handshakes,
+  and every release after it MUST keep accepting them until a window
+  closes: at least the longer of the four sops minor releases that follow
+  the v2 release, or 18 months counted from the v2 release. Removal before
+  the window closes is a release-blocking bug, not a judgment call.
+  Anchoring both bounds to the v2 release keeps the window from shifting
+  as time passes.
 - Dual-stack is the mechanism (PROPOSED): because unknown actions are
   answered with `unsupported_action` and unknown fields ignored, a
   v2-speaking SOPS can negotiate per plugin, speaking v1 to plugins that
@@ -268,10 +269,10 @@ out. A plugin that wants retries (for transient backend errors) owns that
 logic itself before answering.
 
 Exit codes and stderr. SOPS distinguishes only zero from non-zero; it never
-parses specific code values, so the numbered conventions below are guidance
-for plugin authors, not something SOPS keys on. Exit-code inspection
-happens only when a request went unanswered, since an answered request
-never triggers it:
+parses specific code values, so numeric conventions (such as a fixed exit
+code for startup failures) are plugin-author tradition, not something SOPS
+keys on. Exit-code inspection happens only when a request went unanswered,
+since an answered request never triggers it:
 
 - Exit 0 is a clean exit. After a complete response it is the normal
   one-shot exit; before any response byte it triggers a bounded respawn and
@@ -609,8 +610,11 @@ Two diagnostics ship in the CLI:
   explicitly named binary and prints one PASS/FAIL line per check. The
   argument is a filesystem path to the plugin executable (on Windows the
   path must end in `.exe`), or a bare plugin name, prefix optional
-  (`myplugin` or `sops-plugin-myplugin`), which resolves through PATH
-  exactly as a key operation resolves it. An optional `--config '<json>'`
+  (`myplugin` or `sops-plugin-myplugin`). The bare name resolves through
+  PATH the way a creation rule's `binary:` value does, except the prefix
+  is optional here: that spelling is a verify-only convenience (a creation
+  rule's `binary:` value is always prefixed internally). An optional
+  `--config '<json>'`
   sends the given JSON object as the config on every encrypt request, for
   plugins that require config; without the flag verify sends no config at
   all, which is itself a conformance case (section 5):
@@ -653,12 +657,14 @@ a convention, not a reservation: any author may publish a plugin under any
 charset-valid name (section 9), and SOPS does not arbitrate collisions.
 Resolution is local and the first PATH hit wins, so a collision is a
 per-machine install problem: visible with `sops plugins list`, resolvable
-by PATH order, uninstall, or a `path:` override. Plugin authors SHOULD
-choose a distinctive name (their product or backend, not a generic word)
-and treat the wrapped-key prefix (section 8) as their namespace: a plugin
-that follows section 8 refuses blobs whose prefix it does not own, which
-is what keeps two name-colliding plugins from decrypting each other's
-wrapped keys.
+by PATH order, uninstall, or a `path:` override. The wrapped-key prefix
+(section 8) does NOT help here: it follows the name, so two name-colliding
+plugins share the same prefix by construction and neither can refuse the
+other's blobs that way. The prefix disambiguates a plugin's own format and
+version from foreign or corrupt data, nothing more. Plugin authors SHOULD
+still choose a distinctive name (their product or backend, not a generic
+word), because a collision means one binary silently shadows the other on
+every machine where both are installed.
 
 ## 14. Appendix: a minimal plugin, complete
 
@@ -666,8 +672,11 @@ This is a conforming plugin in about 80 lines of Python. It wraps data
 keys with AES-GCM under a master secret from the environment
 (`SOPS_MINIMAL_MASTER_KEY`, 32 chars), so decrypt needs nothing but the
 blob and the environment (section 8). Install it on PATH as
-`sops-plugin-minimal`, add `minimal` to `plugins.allowed`, and
-`sops plugins verify minimal` should pass all four checks.
+`sops-plugin-minimal` (on POSIX; a script cannot be the plugin binary on
+Windows, where section 9 accepts `.exe` only, so Windows users need a
+native wrapper around it, e.g. a pyinstaller-built executable), add
+`minimal` to `plugins.allowed`, and `sops plugins verify minimal` should
+pass all four checks.
 
 ```python
 #!/usr/bin/env python3
