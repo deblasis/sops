@@ -132,17 +132,27 @@ Field meanings:
   SOPS records it in file metadata; `sops plugins verify` requires it to look
   like a version.
 
-Version policy: a future version 2 will be additive only (new JSON fields,
-new action names). Both sides MUST ignore unknown JSON fields. A plugin that
-receives an action it does not implement MUST answer with the
-`unsupported_action` error code (section 6), not exit or hang.
+Version policy, stated as rules rather than intentions:
 
-SOPS-side commitment: once a v2-speaking SOPS ships, SOPS intends to keep
-accepting version 1 handshakes for at least two years after that release,
-as a policy subject to maintainer ratification rather than a formal
-guarantee. Under that policy a plugin written against v1 stays usable for
-the whole window, and the additive-only policy means a v1 plugin never
-needs changes it did not choose.
+- Version 1 is FROZEN. No wire change lands in 1.x, however small: any
+  change to the meaning of an existing field, error code, or framing rule
+  requires a new major version. Additions (new action names, new optional
+  JSON fields) MAY land in 1.x minor releases.
+- Both sides MUST ignore unknown JSON fields, and a plugin that receives an
+  action it does not implement MUST answer with the `unsupported_action`
+  error code (section 6), not exit or hang. Together with the additive
+  rule this means a plugin written against 1.0 keeps working unmodified on
+  every later 1.x, and a v1 plugin never needs changes it did not choose.
+- Deprecation is measured in releases, not years. When a SOPS release adds
+  version 2 support, that release and every release after it MUST accept
+  version 1 handshakes for a window of at least the four most recent SOPS
+  minor releases or 18 months, whichever is longer; removal before the
+  window closes is a release-blocking bug, not a judgment call.
+- Dual-stack is the mechanism: because unknown actions are answered with
+  `unsupported_action` and unknown fields ignored, a v2-speaking SOPS can
+  negotiate per plugin, speaking v1 to plugins that offer v1 for the whole
+  window. A plugin needs no v2 code to survive the transition and no
+  notice to keep working.
 
 The handshake repeats after every respawn. Request ids restart at 1 on each
 spawn. Any output on stdout before the handshake response is a protocol
@@ -251,10 +261,12 @@ request never triggers exit-code inspection):
   surfaces the handshake read failure with the captured stderr attached,
   and captured stderr also accompanies non-zero pre-response exits and
   spawn-cap exhaustion. Whatever a plugin writes to stderr is also surfaced
-  after the key operation during which it was written, as a 1 KiB prefix of
-  the 8 KiB per-process capture (section 7), so warnings printed during an
-  otherwise healthy session reach the user; each captured line is surfaced
-  once, so a reused process does not repeat itself on every operation.
+  with the first completed key operation after it was written (normally the
+  one it was written during; a line that races the response can slip to the
+  next one), as a 1 KiB prefix of the 8 KiB per-process capture (section 7),
+  so warnings printed during an otherwise healthy session reach the user;
+  each captured line is surfaced once, so a reused process does not repeat
+  itself on every operation.
 
 ## 7. Framing
 
@@ -358,6 +370,9 @@ plugins:
     - myplugin
     - otherplugin
     - /usr/local/lib/sops-plugins/sops-plugin-myplugin
+  pinned:
+    myplugin: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+    /usr/local/lib/sops-plugins/sops-plugin-myplugin: 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae
 ```
 
 Entries use the same prefix-stripped form as the `binary:` field
@@ -371,6 +386,28 @@ therefore needs BOTH entries: the absolute path entry gates the
 encrypt-side spawn, while decrypt resolves by binary name from PATH
 (metadata carries no path) and needs the name entry.
 
+Pinning is opt-in integrity. The threat model above (section 2) trusts the
+local machine's PATH, the same trust class as age plugins and kubectl
+credentials; a team that wants more can pin a binary: when `plugins.pinned`
+has an entry keyed by the SAME string as the matching `allowed` entry (name
+or absolute path), SOPS hashes the resolved file with SHA-256 and refuses
+to execute unless the digest matches, in lowercase hex. A pin never grants
+execution by itself, a malformed pin value blocks rather than being
+ignored, and an unpinned binary is unaffected. A plugin upgrade changes
+the binary, so a pin must be updated deliberately when the user chooses to
+trust the new build.
+
+A NOTE on sharing the file with creation rules: SOPS discovers a repo's
+`.sops.yaml` by walking up from the file being encrypted, and `~/.sops.yaml`
+in a user's home is a legitimate hit for files under the home directory, so
+the SAME file can serve as both creation rules (repo-side, committed) and
+plugin allowlist (local, never committed). The two parsers ignore each
+other's keys, which works but has one sharp edge: pruning "unused" keys
+while tidying creation rules can delete the `plugins:` section unnoticed
+and silently block every plugin on the next run. Users who keep encrypted
+files under their home directory SHOULD point `SOPS_LOCAL_CONFIG` at a
+dedicated file; every gate error names the exact local path SOPS consulted.
+
 Every spawn, for encryption and decryption alike, passes this gate. No
 allowlist, or an empty one, blocks every plugin: SOPS fails closed. A
 missing binary on the list blocks that binary; the error states plainly
@@ -381,7 +418,9 @@ only bypass is an explicit diagnostic command where the user named the
 executable on the command line (`sops plugins verify`, and the read-only
 handshake probe behind `sops plugins list`).
 
-The local config also accepts a global `plugins.timeout` (section 10).
+The local config also accepts a global `plugins.timeout` (section 10); a
+value that is not a valid positive duration is a hard error, never a
+silent fallback to the default.
 
 ## 10. Lifecycle and timeouts
 
@@ -394,15 +433,17 @@ Timeouts, in precedence order:
    since decrypt has no creation rule input).
 3. Default: 30 seconds per request.
 
-The timeout covers writing one request line and reading one response line,
-handshake included: a plugin that stops reading its stdin (leaving the
-request write pinned on a full pipe) fails on the same deadline as one that
-stops writing. On timeout SOPS kills the plugin's whole process tree: the
-process group is sent SIGKILL on POSIX (the child is spawned in its own
-group so a wedged tree cannot take SOPS with it); on Windows the tree is
-killed via `taskkill /T /F` with a direct process kill as backstop. A
-timed-out request fails the operation immediately and is never resent
-(section 3).
+The timeout applies to each step of the exchange separately: the handshake
+read, the request write, and the response read each get the full timeout,
+so a pathological exchange can cost up to three times the configured
+timeout before SOPS gives up. A plugin that stops reading its stdin
+(leaving the request write pinned on a full pipe) fails on the same
+deadline as one that stops writing. On timeout SOPS kills the plugin's
+whole process tree: the process group is sent SIGKILL on POSIX (the child
+is spawned in its own group so a wedged tree cannot take SOPS with it); on
+Windows the tree is killed via `taskkill /T /F` with a direct process kill
+as backstop. A timed-out request fails the operation immediately and is
+never resent (section 3).
 
 The timeout is per request, never per process: although one plugin binary
 is reused across key operations (section 3), each key operation runs under

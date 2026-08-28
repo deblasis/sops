@@ -6,8 +6,9 @@ Features:
 
 * Experimental out-of-tree encryption backend plugins (protocol
   `sops-plugin/1`): `plugins:` key groups in `.sops.yaml`, local
-  `plugins.allowed` allowlist, `sops plugins list|verify`, and gated
-  keyservice support (`--enable-plugins`). See `docs/plugins/spec.md`
+  `plugins.allowed` allowlist with optional SHA-256 pinning,
+  `sops plugins list|verify`, and gated keyservice support
+  (`--enable-plugins`). See `docs/plugins/spec.md`
   for the protocol specification.
 
 ## 3.13.3
