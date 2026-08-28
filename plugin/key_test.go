@@ -164,6 +164,17 @@ func TestMalformedErrorObjectsFailPlainly(t *testing.T) {
 	}
 }
 
+// spec section 6: a code outside the frozen list is treated as internal
+func TestUnknownErrorCodeTreatedAsInternal(t *testing.T) {
+	k := NewMasterKey("testplugin", nil, time.Second, "")
+	err := k.answerError("encrypt", &response{OK: false, Error: &pluginError{Code: "weird_code", Message: "boom"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boom")
+	var pe *pluginError
+	require.True(t, errors.As(err, &pe), "got: %v", err)
+	assert.Equal(t, errCodeInternal, pe.Code)
+}
+
 func TestDecryptWithoutWrappedKeyFailsFast(t *testing.T) {
 	// mode "never" hangs on any spawn; a pre-spawn guard returns instantly
 	k := newTestKey(t, "never")

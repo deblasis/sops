@@ -46,10 +46,18 @@ The plugin process inherits SOPS's full environment. Credentials the plugin
 needs (API keys, tokens) SHOULD come from the environment or from the
 plugin's own protected storage, never from repository content.
 
-One disclosure is accepted: encrypted file metadata is plaintext and reveals
-binary names, key references, and plugin versions, so it discloses
-infrastructure topology. This is the same exposure SOPS already has with KMS
-ARNs and age recipients in metadata.
+Two disclosures are accepted:
+
+- Encrypted file metadata is plaintext and reveals binary names, key
+  references, and plugin versions, so it discloses infrastructure topology.
+  This is the same exposure SOPS already has with KMS ARNs and age
+  recipients in metadata.
+- `sops plugins list` briefly EXECUTES every `sops-plugin-*` executable it
+  finds on PATH, to read its handshake. Running a diagnostic command that
+  probes PATH is the same supply-chain decision as running the plugins
+  themselves; apart from this probe and the user-named `sops plugins
+  verify`, nothing in SOPS executes a plugin the allowlist did not gate
+  (section 9).
 
 ## 3. Process model
 
@@ -57,22 +65,29 @@ SOPS spawns one process per distinct plugin binary per key operation. The
 protocol is lockstep: exactly one outstanding request at a time, so lines on
 stdout can never interleave.
 
-Respawn tolerance and the restart budget:
+Respawn tolerance:
 
 - A plugin MAY exit cleanly (exit status 0) after any response. Clean exits
-  never count against the restart budget; SOPS respawns on the next request
-  and re-runs the handshake. One-shot plugins are supported, not tolerated.
+  never fail the operation: SOPS respawns on the next request and re-runs
+  the handshake. One-shot plugins are supported, not tolerated.
 - A clean exit BEFORE any byte of a response has been written (SOPS sees EOF
-  on stdout with no partial line) causes a respawn and the request is resent
-  without counting.
-- The following count against the restart budget, which is 3 per key
-  operation: process death with garbage or partial output, timeouts, and
-  response id mismatch. A request whose response line had BEGUN is never
-  resent: resending could double-apply a wrapped key. The operation fails
-  instead.
-- A plugin that keeps exiting cleanly without answering anything does not
-  hang SOPS: total spawn attempts per request are capped (at most 8), after
-  which SOPS gives up with an error.
+  on stdout with no partial line) likewise causes a respawn and the request
+  is resent. A broken stdin pipe (EPIPE) while writing a request is treated
+  the same way: the child is gone, respawn and resend.
+- Those non-counted respawns are the ONLY respawns, and they are bounded:
+  SOPS makes at most 8 spawn attempts per key operation, then gives up with
+  an error, so a plugin that keeps exiting cleanly without answering cannot
+  hang SOPS.
+- The following failures fail the key operation IMMEDIATELY and are never
+  retried or resent (resending could double-apply a wrap): process death
+  with garbage or partial output, response id mismatch, an oversized
+  response line, and timeouts (section 10). There is no retry budget for
+  them; the failure surfaces to the user at once.
+- Handshake failures are fatal for the operation, with one exception: a
+  clean exit (status 0) before any handshake byte respawns within the same
+  8-attempt cap. A garbage or invalid handshake line, a timeout, a version
+  refusal, or a non-zero startup exit fails the operation immediately.
+- `ok:false` is an answer, not a respawn trigger (section 6).
 
 ## 4. Handshake
 
@@ -108,6 +123,11 @@ new action names). Both sides MUST ignore unknown JSON fields. A plugin that
 receives an action it does not implement MUST answer with the
 `unsupported_action` error code (section 6), not exit or hang.
 
+SOPS-side commitment: once a v2-speaking SOPS ships, SOPS keeps accepting
+version 1 handshakes for at least two years after that release. A plugin
+written against v1 therefore stays usable for that whole window, and the
+additive-only policy means a v1 plugin never needs changes it did not choose.
+
 The handshake repeats after every respawn. Request ids restart at 1 on each
 spawn. Any output on stdout before the handshake response is a protocol
 violation; the first stdout line SOPS reads MUST be the handshake response.
@@ -126,8 +146,11 @@ Fields:
 - `id`: integer, assigned by SOPS starting at 1 in each process. The plugin
   MUST echo it in the response. A mismatched id is a protocol violation.
 - `action`: `"encrypt"` (wrap a data key) or `"decrypt"` (unwrap).
-- `config`: present on encrypt requests only. An arbitrary JSON object from
-  the creation rule (section 11). Opaque to SOPS, meaningful to the plugin.
+- `config`: encrypt requests only, and it MAY be absent entirely: a plugin
+  MUST NOT assume its presence (the creation rule may carry no config
+  object, and `sops plugins verify` sends no config unless `--config` is
+  given). When present, an arbitrary JSON object from the creation rule
+  (section 11). Opaque to SOPS, meaningful to the plugin.
 - `plaintext`: present on encrypt requests only. The 32-byte data key,
   standard padded base64.
 - `wrapped`: present on decrypt requests only. The opaque wrapped-key string
@@ -152,6 +175,9 @@ Fields:
   used for rotation checks (section 11).
 - `plaintext`: decrypt responses only, base64. MUST be non-empty on a
   successful decrypt and MUST be exactly the bytes that were encrypted.
+  SOPS does not enforce the data key's length on decrypt (beyond the
+  framing caps of section 7); plugins SHOULD validate that the recovered
+  key material is 32 bytes before answering.
 - `error`: ok:false responses only, with `code` and `message` both non-empty
   (section 6).
 
@@ -188,8 +214,12 @@ Error codes are frozen for v1. A plugin MUST use one of:
 `ok:false` is an ANSWER, not a crash. SOPS never respawns and never retries
 an answered request; the error propagates to the user immediately. An
 ok:false response without a complete error object (both `code` and
-`message` non-empty) is itself rejected as invalid. In
-particular, `auth_failed` is fatal with no retry: retrying deterministic
+`message` non-empty) is itself rejected as invalid: the operation fails
+with a diagnosis naming the malformed answer. That is a plain failure, not
+a protocol violation (no respawn, no resend), and an ok:true response
+carrying an error object fails the operation the same way. A code outside
+the frozen list is treated by SOPS as `internal`. In particular,
+`auth_failed` is fatal with no retry: retrying deterministic
 credential failures against cloud KMS backends is how accounts get locked
 out. A plugin that wants retries (for transient backend errors) owns that
 logic itself before answering.
@@ -203,7 +233,9 @@ answered request never triggers exit-code inspection):
   handshake (the kubectl convention). SOPS does not parse exit codes, but a
   startup failure SHOULD exit non-zero and write the reason to stderr; SOPS
   surfaces the handshake read failure, and captured stderr accompanies
-  restart-budget exhaustion errors.
+  restart-budget exhaustion errors. Whatever a plugin writes to stderr is
+  also surfaced (truncated to 1 KiB) after every completed key operation,
+  so warnings printed during an otherwise healthy session reach the user.
 
 ## 7. Framing
 
@@ -248,10 +280,9 @@ The wrapped key is opaque to SOPS: an arbitrary non-empty string up to the
 - Version prefix. The wrapped value MUST begin with a versioned prefix so a
   plugin can evolve its format and a corrupted blob is detectable. The
   convention is `<name>.v1.<payload>`, for example
-  `myplugin.v1.z7f3...`, where `<name>` is the plugin's BINARY name
-  (the `binary:` value in `.sops.yaml`, that is, the suffix of
-  `sops-plugin-myplugin`), not the handshake `plugin` string. The
-  prefix is what lets the plugin distinguish
+  `myplugin.v1.z7f3...`, where `<name>` is the plugin's name (section 9),
+  not the handshake `plugin` string. The prefix is what lets the plugin
+  distinguish
   "foreign or corrupt blob" (`invalid_request`) from "my blob, backend
   unreachable" (`key_unavailable`).
 - Base64 payload. If the wrapped value contains binary ciphertext, encode
@@ -270,6 +301,12 @@ plugins enabled, across the network to that server (section 11). Treat
 config as non-secret parameters (key ids, endpoints, options).
 
 ## 9. Binary resolution and the allowlist
+
+Naming, defined once: a plugin's NAME is the basename of its binary as
+installed, `sops-plugin-myplugin`, prefix included wherever a name is
+printed. The `binary:` value in `.sops.yaml` is that same name minus the
+`sops-plugin-` prefix. The handshake `plugin` string (section 4) is a
+separate, plugin-chosen diagnostic label.
 
 Discovery: for a plugin named `foo`, SOPS searches PATH for an executable
 named `sops-plugin-foo` (on Windows, `sops-plugin-foo.exe`), first PATH hit
@@ -331,12 +368,15 @@ Timeouts, in precedence order:
    since decrypt has no creation rule input).
 3. Default: 30 seconds per request.
 
-The timeout covers reading one response line, handshake included. On
-timeout SOPS kills the plugin's whole process tree: the process group is
-sent SIGKILL on POSIX (the child is spawned in its own group so a wedged
-tree cannot take SOPS with it); on Windows the tree is killed via
-`taskkill /T /F` with a direct process kill as backstop. A timed-out
-request counts against the restart budget and is never resent (section 3).
+The timeout covers writing one request line and reading one response line,
+handshake included: a plugin that stops reading its stdin (leaving the
+request write pinned on a full pipe) fails on the same deadline as one that
+stops writing. On timeout SOPS kills the plugin's whole process tree: the
+process group is sent SIGKILL on POSIX (the child is spawned in its own
+group so a wedged tree cannot take SOPS with it); on Windows the tree is
+killed via `taskkill /T /F` with a direct process kill as backstop. A
+timed-out request fails the operation immediately and is never resent
+(section 3).
 
 Child hygiene: on Linux the child is spawned with Pdeathsig SIGKILL so a
 killed SOPS does not orphan a key-holding process. (Known Go runtime
@@ -432,9 +472,11 @@ per-key timeout do not cross the wire, and server-side spawns obey the
 SERVER's allowlist. The local client wraps plugin keys in-process against
 the caller's own key object (the key reference the plugin answers with
 cannot cross the wire), so a plugin key wrapped by a remote key service is
-written with an empty `key_ref` until the file is re-wrapped locally. (Protocol-buffer field 3 of the plugin key message is
-reserved: it briefly held a wrapped value and was removed as write-only
-before release.)
+written with an empty `key_ref` until the file is re-wrapped locally.
+Operationally that means `NeedsRotation` is blind for such a file: with no
+recorded key reference there is nothing to compare against the rule, so
+rotation checks report nothing until the file is re-wrapped locally
+(`sops updatekeys`, or a fresh encrypt through the local key service).
 
 ## 12. Conformance
 
@@ -447,7 +489,12 @@ Two diagnostics ship in the CLI:
   "why does sops not find my plugin" questions (not on PATH, not
   executable, a shadowing `.cmd` file on Windows).
 - `sops plugins verify <binary>` runs four positive checks against an
-  explicitly named binary and prints one PASS/FAIL line per check:
+  explicitly named binary and prints one PASS/FAIL line per check. The
+  argument is a filesystem path to the plugin executable (on Windows the
+  path must end in `.exe`). An optional `--config '<json>'` sends the given
+  JSON object as the config on every encrypt request, for plugins that
+  require config; without the flag verify sends no config at all, which is
+  itself a conformance case (section 5):
 
   1. handshake: the version exchange succeeds and `plugin_version` is
      semver-ish;
@@ -473,3 +520,7 @@ binary cannot be made to simulate those faults on demand.
 ## 13. Spec changelog
 
 - v1 (this document): initial protocol specification.
+- v1 wire note: protocol-buffer field 3 of the plugin key message is
+  reserved. It briefly held a wrapped value during development and was
+  removed as write-only before any release; implementations MUST NOT use
+  it and MUST ignore it if set.

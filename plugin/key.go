@@ -153,7 +153,21 @@ func (k *MasterKey) answerError(action string, resp *response) error {
 		return fmt.Errorf("plugin %s: %s: ok:false with an incomplete error object (code %q, message %q)",
 			k.BinaryName, action, resp.Error.Code, resp.Error.Message)
 	}
-	return fmt.Errorf("plugin %s: %s: %w", k.BinaryName, action, resp.Error)
+	e := resp.Error
+	if !knownErrCodes[e.Code] {
+		// spec section 6: a code outside the frozen list reads as internal
+		e = &pluginError{Code: errCodeInternal, Message: e.Message}
+	}
+	return fmt.Errorf("plugin %s: %s: %w", k.BinaryName, action, e)
+}
+
+var knownErrCodes = map[string]bool{
+	errCodeInvalidRequest:    true,
+	errCodeUnsupportedAction: true,
+	errCodeConfigError:       true,
+	errCodeAuthFailed:        true,
+	errCodeKeyUnavailable:    true,
+	errCodeInternal:          true,
 }
 
 // stderrLogLimit keeps the surfaced stderr readable without spilling a chatty
