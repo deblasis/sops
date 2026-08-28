@@ -132,6 +132,9 @@ func TestStartupFailureIsFatalForKey(t *testing.T) {
 	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, errStartupFailed), "got: %v", err)
+	// the child's pre-handshake stderr reason must ride along on the error
+	assert.Contains(t, err.Error(), "stderr:")
+	assert.Contains(t, err.Error(), "startup broke")
 }
 
 func TestHandshakeCleanExitRespawnsWithinCap(t *testing.T) {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -91,7 +92,7 @@ func (h *host) start(ctx context.Context) error {
 	h.nextID = 1                           // ids restart at 1 per spawn
 	if err := writeLine(h.stdin, handshakeOut{Protocol: protocolName, MaxVersion: protocolVersion}); err != nil {
 		h.kill()
-		return fmt.Errorf("%w: plugin %s: handshake write: %v", errStartupFailed, h.binaryName, err)
+		return fmt.Errorf("%w: plugin %s: handshake write: %v%s", errStartupFailed, h.binaryName, err, h.startupStderr())
 	}
 	hs, err := h.readHandshake(ctx)
 	if err != nil {
@@ -102,16 +103,19 @@ func (h *host) start(ctx context.Context) error {
 			return errHandshakeCleanExit
 		}
 		h.kill()
+		if suffix := h.startupStderr(); suffix != "" {
+			return fmt.Errorf("%w%s", err, suffix)
+		}
 		return err
 	}
 	if hs.Protocol != protocolName || hs.Plugin == "" {
 		h.kill()
-		return fmt.Errorf("%w: plugin %s: bad handshake fields from %s", errStartupFailed, h.binaryName, path)
+		return fmt.Errorf("%w: plugin %s: bad handshake fields from %s%s", errStartupFailed, h.binaryName, path, h.startupStderr())
 	}
 	if hs.Version > protocolVersion || hs.Version < 1 {
 		h.kill()
-		return fmt.Errorf("%w: plugin %s (%s %s) wants protocol version %d, sops supports 1..%d",
-			errVersionRefused, h.binaryName, hs.Plugin, hs.PluginVersion, hs.Version, protocolVersion)
+		return fmt.Errorf("%w: plugin %s (%s %s) wants protocol version %d, sops supports 1..%d%s",
+			errVersionRefused, h.binaryName, hs.Plugin, hs.PluginVersion, hs.Version, protocolVersion, h.startupStderr())
 	}
 	h.pluginName = hs.Plugin
 	h.pluginVersion = hs.PluginVersion
@@ -303,6 +307,19 @@ func (h *host) stderrString() string {
 		return ""
 	}
 	return h.stderr.String()
+}
+
+// startupStderr explains a fatal startup in the child's own words, capped
+// like the per-operation stderr log so a chatty child cannot flood the error
+func (h *host) startupStderr() string {
+	s := strings.TrimSpace(h.stderrString())
+	if s == "" {
+		return ""
+	}
+	if len(s) > stderrLogLimit {
+		s = s[:stderrLogLimit] + "...[truncated]"
+	}
+	return "; stderr: " + s
 }
 
 // kill destroys the process tree and detaches all pipes. Idempotent.
