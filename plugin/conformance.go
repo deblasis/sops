@@ -39,8 +39,10 @@ func (r *ConformanceResult) ok(detail string) {
 // RunConformance exercises a plugin binary end to end: handshake, encrypt /
 // decrypt lockstep round trip, error-object shape on a bogus blob, and a
 // repeat that also crosses a respawn. The allowlist gate is bypassed: the
-// caller named this binary explicitly on the CLI.
-func RunConformance(path string) []ConformanceResult {
+// caller named this binary explicitly on the CLI. config, which may be nil,
+// rides every encrypt request: a plugin that requires config must pass with
+// it and a plugin that ignores it is unaffected.
+func RunConformance(path string, config map[string]any) []ConformanceResult {
 	res := []ConformanceResult{
 		{Name: "handshake"},
 		{Name: "roundtrip"},
@@ -79,14 +81,14 @@ func RunConformance(path string) []ConformanceResult {
 		probeB[i] = byte(i * 0xFF / (probeLen - 1))
 	}
 
-	runRoundTrip(ctx, h, probeA, probeB, &res[1])
+	runRoundTrip(ctx, h, probeA, probeB, config, &res[1])
 	runErrorShape(ctx, h, &res[2])
-	runRepeat(ctx, h, probeA, &res[3])
+	runRepeat(ctx, h, probeA, config, &res[3])
 	return res
 }
 
-func runRoundTrip(ctx context.Context, h *host, a, b []byte, r *ConformanceResult) {
-	encA, err := h.do(ctx, request{Action: "encrypt", Plaintext: a})
+func runRoundTrip(ctx context.Context, h *host, a, b []byte, config map[string]any, r *ConformanceResult) {
+	encA, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: a})
 	switch {
 	case err != nil:
 		r.fail(err.Error())
@@ -98,7 +100,7 @@ func runRoundTrip(ctx context.Context, h *host, a, b []byte, r *ConformanceResul
 		r.fail("encrypt ok but wrapped is empty or equals the plaintext")
 		return
 	}
-	encB, err := h.do(ctx, request{Action: "encrypt", Plaintext: b})
+	encB, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: b})
 	switch {
 	case err != nil:
 		r.fail(err.Error())
@@ -158,8 +160,8 @@ func runErrorShape(ctx context.Context, h *host, r *ConformanceResult) {
 	r.ok(fmt.Sprintf("error object %s: %s", dec.Error.Code, dec.Error.Message))
 }
 
-func runRepeat(ctx context.Context, h *host, probe []byte, r *ConformanceResult) {
-	if resp, err := h.do(ctx, request{Action: "encrypt", Plaintext: probe}); err != nil {
+func runRepeat(ctx context.Context, h *host, probe []byte, config map[string]any, r *ConformanceResult) {
+	if resp, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: probe}); err != nil {
 		r.fail(fmt.Sprintf("session reuse: %v", err))
 		return
 	} else if !resp.OK {
@@ -167,7 +169,7 @@ func runRepeat(ctx context.Context, h *host, probe []byte, r *ConformanceResult)
 		return
 	}
 	h.kill() // force a death: the next request must respawn and still succeed
-	if resp, err := h.do(ctx, request{Action: "encrypt", Plaintext: probe}); err != nil {
+	if resp, err := h.do(ctx, request{Action: "encrypt", Config: config, Plaintext: probe}); err != nil {
 		r.fail(fmt.Sprintf("after respawn: %v", err))
 		return
 	} else if !resp.OK {

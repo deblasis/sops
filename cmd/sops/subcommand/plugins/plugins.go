@@ -3,6 +3,7 @@
 package plugins
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -72,9 +73,12 @@ func List(w io.Writer) error {
 }
 
 // Verify runs positive conformance checks against an explicitly named plugin
-// binary and prints one PASS/FAIL line per check. A non-nil return means at
-// least one check failed; the caller maps it to a non-zero exit code.
-func Verify(w io.Writer, binaryPath string) error {
+// binary and prints one PASS/FAIL line per check. configJSON, when non-empty,
+// is a JSON object sent as the config on every encrypt request, so plugins
+// that require config can be verified in their real mode. A non-nil return
+// means at least one check failed (or the input was unusable); the caller maps
+// it to a non-zero exit code.
+func Verify(w io.Writer, binaryPath, configJSON string) error {
 	abs, err := filepath.Abs(binaryPath)
 	if err != nil {
 		return fmt.Errorf("resolving %q to an absolute path: %w", binaryPath, err)
@@ -88,8 +92,14 @@ func Verify(w io.Writer, binaryPath string) error {
 	if !plugin.CheckExecutable(abs) {
 		return fmt.Errorf("%s is not a native executable; plugins must be executables (on Windows, .exe)", abs)
 	}
+	var config map[string]any
+	if configJSON != "" {
+		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
+			return fmt.Errorf("--config must be a JSON object: %w", err)
+		}
+	}
 	failed := false
-	for _, r := range plugin.RunConformance(abs) {
+	for _, r := range plugin.RunConformance(abs, config) {
 		status := "PASS"
 		if !r.Pass {
 			status = "FAIL"

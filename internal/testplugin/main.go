@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -130,6 +130,12 @@ func main() {
 		switch r.Action {
 		case "encrypt":
 			lastPlain = r.Plaintext
+			if mode == "requireconfig" && len(r.Config) == 0 {
+				// a config-requiring plugin answers config_error when sops
+				// sends no config (the shape `plugins verify` must cover)
+				writeJSON(out, respErr{ID: r.ID, OK: false, Error: &perr{Code: "config_error", Message: "config required"}})
+				continue
+			}
 			if mode == "echo" {
 				writeJSON(out, resp{ID: r.ID, OK: true, Wrapped: "echo.v1.stored", KeyRef: "echokey/stored"})
 				nAnswered++

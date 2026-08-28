@@ -531,11 +531,17 @@ func main() {
 					Name:      "verify",
 					Usage:     "run conformance checks against a plugin binary",
 					ArgsUsage: `binary`,
+					Flags: []cli.Flag{
+						cli.StringFlag{
+							Name:  "config",
+							Usage: `JSON object sent as the config on encrypt requests, for plugins that require config`,
+						},
+					},
 					Action: func(c *cli.Context) error {
 						if c.NArg() < 1 {
 							return common.NewExitError("Error: no plugin binary specified", codes.NoFileSpecified)
 						}
-						if err := pluginscmd.Verify(c.App.Writer, c.Args()[0]); err != nil {
+						if err := pluginscmd.Verify(c.App.Writer, c.Args()[0], c.String("config")); err != nil {
 							return common.NewExitError(err, codes.ErrorGeneric)
 						}
 						return nil
