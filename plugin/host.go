@@ -72,6 +72,9 @@ func (h *host) start(ctx context.Context) error {
 	}
 	cmd := exec.Command(path)
 	cmd.Env = os.Environ()
+	// never the repo as working directory: a plugin sniffing its cwd must not
+	// see repository content
+	cmd.Dir = os.TempDir()
 	setChildAttrs(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
