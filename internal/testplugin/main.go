@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise", "empty_ok":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -144,6 +144,11 @@ func main() {
 		case "ok_with_err":
 			// ok:true carrying an error object anyway
 			writeJSON(out, respErr{ID: r.ID, OK: true, Error: &perr{Code: "internal", Message: "should not be here"}})
+			continue
+		case "empty_ok":
+			// ok:true with no payload: exercises the host-side diagnoses that
+			// must name the binary
+			writeJSON(out, resp{ID: r.ID, OK: true})
 			continue
 		case "unflushed":
 			// write response without newline, then hang: host must time out, not accept

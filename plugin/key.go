@@ -106,7 +106,7 @@ func (k *MasterKey) Encrypt(dataKey []byte) error {
 		return err
 	}
 	if resp.Wrapped == "" {
-		return &pluginError{Code: errCodeInternal, Message: "plugin returned no wrapped key"}
+		return &pluginError{Code: errCodeInternal, Message: fmt.Sprintf("plugin %s returned no wrapped key", k.BinaryName)}
 	}
 	k.WrappedKey = resp.Wrapped
 	k.KeyRef = resp.KeyRef
@@ -130,7 +130,7 @@ func (k *MasterKey) Decrypt() ([]byte, error) {
 		return nil, err
 	}
 	if len(resp.Plaintext) == 0 {
-		return nil, &pluginError{Code: errCodeInternal, Message: "plugin returned no plaintext"}
+		return nil, &pluginError{Code: errCodeInternal, Message: fmt.Sprintf("plugin %s returned no plaintext", k.BinaryName)}
 	}
 	return resp.Plaintext, nil
 }

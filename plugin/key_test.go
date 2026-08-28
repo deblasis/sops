@@ -175,6 +175,21 @@ func TestUnknownErrorCodeTreatedAsInternal(t *testing.T) {
 	assert.Equal(t, errCodeInternal, pe.Code)
 }
 
+// the ok:true-with-no-payload diagnoses must name the binary: without it the
+// user cannot tell which plugin misbehaved
+func TestEmptyAnswerDiagnosesNameBinary(t *testing.T) {
+	k := newTestKey(t, "empty_ok")
+	err := k.Encrypt([]byte("datakey-0000000000000000"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin testplugin returned no wrapped key")
+
+	k = newTestKey(t, "empty_ok")
+	k.SetEncryptedDataKey([]byte(wrapForTest("datakey-0000000000000000")))
+	_, err = k.Decrypt()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugin testplugin returned no plaintext")
+}
+
 func TestDecryptWithoutWrappedKeyFailsFast(t *testing.T) {
 	// mode "never" hangs on any spawn; a pre-spawn guard returns instantly
 	k := newTestKey(t, "never")
