@@ -200,18 +200,36 @@ func TestPinnedAbsolutePathEntryChecksDigest(t *testing.T) {
 	require.NoError(t, k3.Encrypt([]byte("datakey-0000000000000000")))
 
 	if runtime.GOOS == "windows" {
-		// drive-letter case is the classic Windows pitfall: byte-exact
-		// matching rejects the differently-cased entry
-		alt := strings.ToUpper(bin[:1]) + bin[1:]
-		if alt != bin {
-			resetHostRegistry()
-			writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n", alt))
-			k4 := NewMasterKey("testplugin", nil, 0, bin)
-			err := k4.Encrypt([]byte("datakey-0000000000000000"))
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "not on the local plugins.allowed list")
+		// byte-exact matching rejects a differently-cased entry: flip the
+		// case of a real directory component (the drive letter is already
+		// uppercase on every normal install, so flipping it tests nothing)
+		alt := withComponentCaseFlipped(bin)
+		if alt == "" {
+			t.Fatalf("no flippable path component in %q", bin)
+		}
+		resetHostRegistry()
+		writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n", alt))
+		k4 := NewMasterKey("testplugin", nil, 0, bin)
+		err := k4.Encrypt([]byte("datakey-0000000000000000"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not on the local plugins.allowed list")
+	}
+}
+
+// withComponentCaseFlipped returns the path with the case of its first
+// case-changed-by-lowercasing directory component inverted (drive root and
+// the file itself excluded), or "" when no component changes under lowercase
+func withComponentCaseFlipped(p string) string {
+	parts := strings.SplitAfter(p, string(filepath.Separator))
+	for i := 1; i < len(parts)-1; i++ {
+		comp := strings.TrimSuffix(parts[i], string(filepath.Separator))
+		low := strings.ToLower(comp)
+		if low != comp {
+			parts[i] = low + string(filepath.Separator)
+			return strings.Join(parts, "")
 		}
 	}
+	return ""
 }
 
 // a bad global timeout is a config error, not a silent fallback to 30s

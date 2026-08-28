@@ -178,8 +178,12 @@ func TestContextCancelAbandonsPromptlyWithoutCounting(t *testing.T) {
 	start := time.Now()
 	_, err := h.do(ctx, testTimeout, request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
+	// the error identity is the real proof ctx won: the host-timeout path
+	// returns a different error. The elapsed bound is loose because Windows
+	// tree-kill teardown runs after the deadline fires (see the other 8s bounds)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "got: %v", err)
-	assert.Less(t, time.Since(start), testTimeout, "ctx cancellation must beat the host timeout")
+	assert.Contains(t, err.Error(), "abandoned")
+	assert.Less(t, time.Since(start), 8*time.Second)
 	assert.Nil(t, h.cmd, "abandoned child must still be killed")
 }
 

@@ -94,10 +94,13 @@ func (h *host) start(ctx context.Context, timeout time.Duration) error {
 	h.stdout = bufio.NewReader(stdoutPipe) // fresh per spawn: never splice output across processes
 	h.nextID = 1                           // ids restart at 1 per spawn
 	// the handshake line is a step like any other: it gets the operation's
-	// timeout too, so a child that never reads stdin cannot pin the spawn
-	hwerr := h.writeWithin(ctx, timeout, "handshake write", func() error {
-		return writeLine(h.stdin, handshakeOut{Protocol: protocolName, MaxVersion: protocolVersion})
-	})
+	// timeout too (spec section 10). A line this small normally lands in the
+	// fresh pipe buffer immediately, so the deadline only matters in exotic
+	// cases (a child suspended before its first read); it is here for
+	// completeness, not because the hang is a realistic shape.
+	handshakeW := h.stdin
+	hwerr := h.writeWithin(ctx, timeout, "handshake write", handshakeW,
+		handshakeOut{Protocol: protocolName, MaxVersion: protocolVersion})
 	if hwerr != nil {
 		if errors.Is(hwerr, context.Canceled) || errors.Is(hwerr, context.DeadlineExceeded) {
 			return hwerr // caller gave up: not plugin misbehavior
@@ -161,15 +164,16 @@ func (h *host) readLineWithin(ctx context.Context, timeout time.Duration, what s
 	}
 }
 
-// writeWithin writes to the plugin's stdin under the same timeout discipline
-// as reads: a child that hands successfully but never reads stdin must not
-// pin sops on a full pipe. The writer handle is captured so an abandoned
-// goroutine can only ever touch this spawn's stdin. Used for the handshake
-// line and request lines alike (spec section 10: every step gets the timeout).
-func (h *host) writeWithin(ctx context.Context, timeout time.Duration, what string, write func() error) error {
+// writeWithin writes one line to the given handle under the same timeout
+// discipline as reads. The handle is captured by the CALLER, before this
+// launches its goroutine: killLocked nils h.stdin under the mutex, so a
+// lazily-read field would race the kill and can even read nil. Used for the
+// handshake line and request lines alike (spec section 10: every step gets
+// the timeout).
+func (h *host) writeWithin(ctx context.Context, timeout time.Duration, what string, w io.Writer, v any) error {
 	type writeRes struct{ err error }
 	ch := make(chan writeRes, 1)
-	go func() { ch <- writeRes{write()} }()
+	go func() { ch <- writeRes{writeLine(w, v)} }()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -185,9 +189,8 @@ func (h *host) writeWithin(ctx context.Context, timeout time.Duration, what stri
 }
 
 func (h *host) writeLineWithin(ctx context.Context, timeout time.Duration, req request) error {
-	return h.writeWithin(ctx, timeout, fmt.Sprintf("write of %q request", req.Action), func() error {
-		return writeLine(h.stdin, req)
-	})
+	w := h.stdin
+	return h.writeWithin(ctx, timeout, fmt.Sprintf("write of %q request", req.Action), w, req)
 }
 
 func (h *host) readHandshake(ctx context.Context, timeout time.Duration) (handshakeIn, error) {
