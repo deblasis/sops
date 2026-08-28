@@ -52,6 +52,11 @@ func resolvePlugin(binaryName, pathOverride string) (string, error) {
 		if dir == "" {
 			continue
 		}
+		// a relative entry (like ".") would resolve plugins from whatever
+		// the current directory happens to be: the never-cwd promise holds
+		if !filepath.IsAbs(dir) {
+			continue
+		}
 		cand := filepath.Join(dir, exe)
 		if isExecutableFile(cand) {
 			abs, err := filepath.Abs(cand)
@@ -65,7 +70,7 @@ func resolvePlugin(binaryName, pathOverride string) (string, error) {
 	// so users learn they must install a native executable
 	if runtime.GOOS == "windows" {
 		for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-			if dir == "" {
+			if dir == "" || !filepath.IsAbs(dir) {
 				continue
 			}
 			for _, ext := range []string{".cmd", ".bat", ".ps1"} {

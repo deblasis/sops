@@ -43,6 +43,18 @@ func TestListsExecutablePluginsSorted(t *testing.T) {
 	assert.Contains(t, lines[1], "sops-plugin-beta\t")
 }
 
+func TestListSkipsRelativePathEntries(t *testing.T) {
+	// a "." PATH entry must not discover plugins from the current directory
+	dir := t.TempDir()
+	writeFakePlugin(t, dir, pluginName("sops-plugin-cwdplant"))
+	t.Chdir(dir)
+	t.Setenv("PATH", ".")
+
+	var buf bytes.Buffer
+	require.NoError(t, List(&buf))
+	assert.Empty(t, buf.String())
+}
+
 func TestNonExecutableShadowDoesNotSuppressLaterExecutable(t *testing.T) {
 	dirA := t.TempDir()
 	dirB := t.TempDir()

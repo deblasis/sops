@@ -29,6 +29,11 @@ func List(w io.Writer) error {
 		if dir == "" {
 			continue
 		}
+		// mirror resolution: a relative entry would discover plugins from
+		// the current directory, which the spec forbids
+		if !filepath.IsAbs(dir) {
+			continue
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			continue // unreadable PATH entries are the normal case, not an error

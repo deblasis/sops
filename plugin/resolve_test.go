@@ -11,6 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return b
+}
+
 func TestValidateBinaryName(t *testing.T) {
 	for name, ok := range map[string]bool{
 		"ocikms":      true,
@@ -38,6 +45,25 @@ func TestResolveViaPathOnly(t *testing.T) {
 	want, err := filepath.Abs(filepath.Clean(bin))
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Clean(want), filepath.Clean(got))
+}
+
+func TestResolveSkipsRelativePathEntries(t *testing.T) {
+	// a "." (or any relative) PATH entry must not resolve plugins from the
+	// current directory, whatever happens to be planted there
+	bin := buildTestPlugin(t)
+	plantDir := t.TempDir()
+	name := "sops-plugin-evil"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(plantDir, name), mustRead(t, bin), 0o755))
+
+	t.Chdir(plantDir)
+	t.Setenv("PATH", "."+string(os.PathListSeparator)+filepath.Join(".", "sub"))
+
+	_, err := resolvePlugin("evil", "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errNotFound)
 }
 
 func TestResolveRejectsCwdPlant(t *testing.T) {

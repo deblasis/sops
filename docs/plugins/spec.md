@@ -274,7 +274,7 @@ config as non-secret parameters (key ids, endpoints, options).
 Discovery: for a plugin named `foo`, SOPS searches PATH for an executable
 named `sops-plugin-foo` (on Windows, `sops-plugin-foo.exe`), first PATH hit
 wins. The current directory is never searched on any OS, even if it appears
-in PATH as an empty entry.
+in PATH as an empty or relative entry (relative PATH entries are skipped).
 
 Windows specifics: only `.exe` is accepted. PATHEXT is not consulted, so
 `.cmd`, `.bat`, and `.ps1` are refused even if they shadow an executable
