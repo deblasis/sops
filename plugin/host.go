@@ -389,9 +389,40 @@ func (h *host) killLocked() {
 func (h *host) opSnapshot() (version, stderr string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	h.drainStderrLocked()
 	s, mark := h.stderr.since(h.stderrMark)
 	h.stderrMark = mark
 	return h.pluginVersion, s
+}
+
+// drainStderrLocked waits for the exec package's stderr copy goroutine to
+// catch up before the snapshot marks the buffer: a warning a healthy child
+// printed just before its response sits in the OS pipe first and reaches the
+// buffer only once that goroutine is scheduled, and marking too early would
+// surface the line one operation late (or never, if the child exits first).
+// Quiescence, not a blind sleep: it returns as soon as the buffer stops
+// growing, bounded for a child that streams stderr continuously. Must be
+// called with h.mu held.
+func (h *host) drainStderrLocked() {
+	const (
+		tick    = 2 * time.Millisecond
+		maxWait = 50 * time.Millisecond
+		stable  = 3
+	)
+	deadline := time.Now().Add(maxWait)
+	prev, hits := -1, 0
+	for time.Now().Before(deadline) {
+		n := h.stderr.Len()
+		if n == prev {
+			hits++
+			if hits >= stable {
+				return
+			}
+		} else {
+			prev, hits = n, 0
+		}
+		time.Sleep(tick)
+	}
 }
 
 // prefixOf renders at most n bytes of raw stdout; garbage must never reach an
@@ -438,6 +469,12 @@ func (l *limitedBuffer) since(mark int) (string, int) {
 		mark = len(b)
 	}
 	return string(b[mark:]), len(b)
+}
+
+func (l *limitedBuffer) Len() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Len()
 }
 
 func (l *limitedBuffer) String() string {

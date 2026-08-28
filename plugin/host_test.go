@@ -108,7 +108,9 @@ func TestTimeoutKillsAndErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "timeout")
 	assert.Contains(t, err.Error(), "testplugin")
 	assert.Contains(t, err.Error(), "decrypt")
-	assert.Less(t, elapsed, 4*time.Second)
+	// the wall bound is loose on purpose: Windows tree-kill teardown runs
+	// after the deadline fires and can burn its own bounded seconds
+	assert.Less(t, elapsed, 8*time.Second)
 	assert.Nil(t, h.cmd, "timed-out process must be gone")
 }
 
@@ -214,6 +216,24 @@ func TestCrashAfterRequestFailsWithoutResend(t *testing.T) {
 	assert.Contains(t, err.Error(), "status 7")
 	assert.Contains(t, err.Error(), "crashed on purpose")
 	// exactly one spawn: a resend would have bumped the counter twice
+	got, rerr := os.ReadFile(countPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, "1", strings.TrimSpace(string(got)))
+}
+
+// the write-side twin of the crash test above: the child dies non-zero
+// without ever reading the request, so the write breaks against a dead pipe.
+// Same contract: exactly one spawn, no resend, exit status + stderr named.
+// The oversized payload keeps the write in flight while the child exits, so
+// the EPIPE branch is the one that fires.
+func TestCrashBeforeRequestFailsWithoutResend(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "count")
+	t.Setenv("SOPS_TESTPLUGIN_PROCFILE", countPath)
+	h := newTestHost(t, "crash_before_request")
+	_, err := h.do(context.Background(), testTimeout, request{Action: "encrypt", Plaintext: make([]byte, 256*1024)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 7")
+	assert.Contains(t, err.Error(), "crashed on purpose")
 	got, rerr := os.ReadFile(countPath)
 	require.NoError(t, rerr)
 	assert.Equal(t, "1", strings.TrimSpace(string(got)))
