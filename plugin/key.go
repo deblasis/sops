@@ -1,3 +1,5 @@
+// Package plugin bridges sops master keys to out-of-process encryption
+// backends speaking the sops-plugin/1 line protocol (docs/plugins/spec.md).
 package plugin
 
 import (
@@ -92,9 +94,9 @@ func (k *MasterKey) NeedsRotation() bool {
 }
 
 func (k *MasterKey) Encrypt(dataKey []byte) error {
+	// one host per operation: the restart budget starts clean every time
 	h := newHost(k.BinaryName, k.PathOverride, k.timeoutOr())
 	defer h.kill()
-	h.ResetBudget()
 	resp, err := h.do(requestContext(), request{Action: "encrypt", Config: k.Config, Plaintext: dataKey})
 	if err != nil {
 		return err
@@ -119,7 +121,6 @@ func (k *MasterKey) Decrypt() ([]byte, error) {
 	}
 	h := newHost(k.BinaryName, k.PathOverride, k.timeoutOr())
 	defer h.kill()
-	h.ResetBudget()
 	resp, err := h.do(requestContext(), request{Action: "decrypt", Wrapped: k.WrappedKey})
 	if err != nil {
 		return nil, err

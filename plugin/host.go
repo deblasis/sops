@@ -34,7 +34,7 @@ type host struct {
 	binaryName    string
 	pathOverride  string
 	timeout       time.Duration
-	skipGate      bool // Task 12 conformance bypass for the allowlist gate
+	skipGate      bool // diagnostics (verify, probe) name the binary explicitly; they bypass the allowlist gate
 	resolvedPath  string
 	cmd           *exec.Cmd
 	stdin         io.WriteCloser
@@ -49,13 +49,6 @@ type host struct {
 
 func newHost(binaryName, pathOverride string, timeout time.Duration) *host {
 	return &host{binaryName: binaryName, pathOverride: pathOverride, timeout: timeout}
-}
-
-// ResetBudget clears the per-key restart counter; a new key starts clean.
-func (h *host) ResetBudget() {
-	h.mu.Lock()
-	h.restarts = 0
-	h.mu.Unlock()
 }
 
 func (h *host) start(ctx context.Context) error {
