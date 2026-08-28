@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -164,6 +166,52 @@ func TestPinnedAllowlistEntryChecksDigest(t *testing.T) {
 	k4 := NewMasterKey("otherplugin", nil, 0, "")
 	err = k4.Encrypt([]byte("datakey-0000000000000000"))
 	require.Error(t, err)
+}
+
+// a path-override entry can be pinned too: the pin key must be the exact
+// absolute-path string of the allowlist entry. Matching is byte-exact on all
+// platforms, so on Windows an entry that differs only in case does not even
+// authorize, and a pin keyed under such a spelling is silently inert.
+func TestPinnedAbsolutePathEntryChecksDigest(t *testing.T) {
+	bin := buildTestPlugin(t)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
+	good := hashFile(t, bin)
+
+	writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n  pinned:\n    %s: %s\n", bin, bin, good))
+	k := NewMasterKey("testplugin", nil, 0, bin)
+	require.NoError(t, k.Encrypt([]byte("datakey-0000000000000000")))
+
+	// stale pin bytes under the same path string: fail closed
+	resetHostRegistry()
+	writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n  pinned:\n    %s: %s\n",
+		bin, bin, strings.Repeat("0", 64)))
+	k2 := NewMasterKey("testplugin", nil, 0, bin)
+	err := k2.Encrypt([]byte("datakey-0000000000000000"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+
+	// a pin keyed under a spelling that can never match is inert: the run
+	// passes UNpinned. The spec warns to keep pin keys identical to the entry.
+	resetHostRegistry()
+	writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n  pinned:\n    never-matches: %s\n", bin, good))
+	k3 := NewMasterKey("testplugin", nil, 0, bin)
+	require.NoError(t, k3.Encrypt([]byte("datakey-0000000000000000")))
+
+	if runtime.GOOS == "windows" {
+		// drive-letter case is the classic Windows pitfall: byte-exact
+		// matching rejects the differently-cased entry
+		alt := strings.ToUpper(bin[:1]) + bin[1:]
+		if alt != bin {
+			resetHostRegistry()
+			writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n", alt))
+			k4 := NewMasterKey("testplugin", nil, 0, bin)
+			err := k4.Encrypt([]byte("datakey-0000000000000000"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not on the local plugins.allowed list")
+		}
+	}
 }
 
 // a bad global timeout is a config error, not a silent fallback to 30s

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/getsops/sops/v3/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -73,4 +74,27 @@ func TestNonExecutableShadowDoesNotSuppressLaterExecutable(t *testing.T) {
 	assert.Contains(t, buf.String(), real)
 	assert.Equal(t, 1, strings.Count(buf.String(), "sops-plugin-shadow\t"),
 		"shadow must be listed exactly once, from the executable dirB hit")
+}
+
+// verify accepts the same bare name a config uses: it resolves through PATH
+// (prefix optional), not just as a filesystem path. The real testplugin
+// binary proves the whole conformance run works off the resolved name.
+func TestVerifyAcceptsBareName(t *testing.T) {
+	bin := testutil.BuildTestPlugin(t)
+	t.Setenv("PATH", filepath.Dir(bin)+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	var buf bytes.Buffer
+	require.NoError(t, Verify(&buf, "testplugin", ""))
+	assert.Contains(t, buf.String(), "PASS\thandshake")
+	assert.Equal(t, 0, strings.Count(buf.String(), "FAIL"))
+
+	// the prefixed form resolves too
+	buf.Reset()
+	require.NoError(t, Verify(&buf, "sops-plugin-testplugin", ""))
+	assert.Contains(t, buf.String(), "PASS\thandshake")
+
+	// an unknown name fails with resolution, not conformance
+	err := Verify(&buf, "no-such-plugin", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not resolve as a plugin name")
 }

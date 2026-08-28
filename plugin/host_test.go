@@ -128,10 +128,18 @@ func TestWrongIDIsViolation(t *testing.T) {
 	assert.Contains(t, err.Error(), "id")
 }
 
+// an oversized line is a violation that fails the op at once: the cap is
+// named on the error and the request is never resent (exactly one spawn)
 func TestOversizedResponseRejected(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "count")
+	t.Setenv("SOPS_TESTPLUGIN_PROCFILE", countPath)
 	h := newTestHost(t, "oversized")
 	_, err := h.do(context.Background(), testTimeout, request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
+	assert.Contains(t, err.Error(), "line exceeds protocol cap")
+	got, rerr := os.ReadFile(countPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, "1", strings.TrimSpace(string(got)))
 }
 
 func TestStartupFailureIsFatalForKey(t *testing.T) {
@@ -184,7 +192,9 @@ func TestWriteTimeoutWhenChildNeverReads(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
 	assert.Contains(t, err.Error(), "encrypt")
-	assert.Less(t, time.Since(start), 4*time.Second)
+	// loose wall bound: Windows tree-kill teardown runs after the deadline
+	// and can burn its own seconds under load (see TestTimeoutKillsAndErrors)
+	assert.Less(t, time.Since(start), 8*time.Second)
 	assert.Nil(t, h.cmd, "wedged process must be gone")
 }
 

@@ -529,8 +529,8 @@ func main() {
 				},
 				{
 					Name:      "verify",
-					Usage:     "run conformance checks against a plugin binary",
-					ArgsUsage: `binary`,
+					Usage:     "run conformance checks against a plugin binary, named by path or by plugin name",
+					ArgsUsage: `binary|name`,
 					Flags: []cli.Flag{
 						cli.StringFlag{
 							Name:  "config",

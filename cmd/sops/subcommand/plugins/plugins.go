@@ -78,15 +78,17 @@ func List(w io.Writer) error {
 }
 
 // Verify runs positive conformance checks against an explicitly named plugin
-// binary and prints one PASS/FAIL line per check. configJSON, when non-empty,
-// is a JSON object sent as the config on every encrypt request, so plugins
-// that require config can be verified in their real mode. A non-nil return
-// means at least one check failed (or the input was unusable); the caller maps
-// it to a non-zero exit code.
-func Verify(w io.Writer, binaryPath, configJSON string) error {
-	abs, err := filepath.Abs(binaryPath)
+// binary and prints one PASS/FAIL line per check. pluginRef is a filesystem
+// path or a bare plugin name (prefix optional), resolved through PATH like a
+// key operation. configJSON, when non-empty, is a JSON object sent as the
+// config on every encrypt request, so plugins that require config can be
+// verified in their real mode. A non-nil return means at least one check
+// failed (or the input was unusable); the caller maps it to a non-zero exit
+// code.
+func Verify(w io.Writer, pluginRef, configJSON string) error {
+	abs, err := resolveVerifyTarget(pluginRef)
 	if err != nil {
-		return fmt.Errorf("resolving %q to an absolute path: %w", binaryPath, err)
+		return err
 	}
 	if _, err := os.Stat(abs); err != nil {
 		if os.IsNotExist(err) {
@@ -116,4 +118,21 @@ func Verify(w io.Writer, binaryPath, configJSON string) error {
 		return errors.New("plugin conformance failed")
 	}
 	return nil
+}
+
+// resolveVerifyTarget maps the CLI argument to a plugin executable: a path
+// passes through unchanged; anything without a path separator is treated as
+// a plugin name and resolved through PATH, so `verify myplugin` works the
+// way the config names it.
+func resolveVerifyTarget(ref string) (string, error) {
+	if strings.ContainsRune(ref, '/') || strings.ContainsRune(ref, '\\') ||
+		strings.ContainsRune(ref, filepath.Separator) {
+		return filepath.Abs(ref)
+	}
+	abs, err := plugin.ResolveName(ref)
+	if err != nil {
+		return "", fmt.Errorf("%q is not an existing file and does not resolve as a plugin name "+
+			"(pass a path like ./%s to verify a file outside PATH): %w", ref, ref, err)
+	}
+	return abs, nil
 }

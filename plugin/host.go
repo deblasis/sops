@@ -93,9 +93,17 @@ func (h *host) start(ctx context.Context, timeout time.Duration) error {
 	h.stdin = stdin
 	h.stdout = bufio.NewReader(stdoutPipe) // fresh per spawn: never splice output across processes
 	h.nextID = 1                           // ids restart at 1 per spawn
-	if err := writeLine(h.stdin, handshakeOut{Protocol: protocolName, MaxVersion: protocolVersion}); err != nil {
+	// the handshake line is a step like any other: it gets the operation's
+	// timeout too, so a child that never reads stdin cannot pin the spawn
+	hwerr := h.writeWithin(ctx, timeout, "handshake write", func() error {
+		return writeLine(h.stdin, handshakeOut{Protocol: protocolName, MaxVersion: protocolVersion})
+	})
+	if hwerr != nil {
+		if errors.Is(hwerr, context.Canceled) || errors.Is(hwerr, context.DeadlineExceeded) {
+			return hwerr // caller gave up: not plugin misbehavior
+		}
 		h.killLocked()
-		return fmt.Errorf("%w: plugin %s: handshake write: %v%s", errStartupFailed, h.binaryName, err, h.startupStderr())
+		return fmt.Errorf("%w: plugin %s: handshake write: %v%s", errStartupFailed, h.binaryName, hwerr, h.startupStderr())
 	}
 	hs, err := h.readHandshake(ctx, timeout)
 	if err != nil {
@@ -153,15 +161,15 @@ func (h *host) readLineWithin(ctx context.Context, timeout time.Duration, what s
 	}
 }
 
-// writeLineWithin writes one request line under the same timeout discipline
+// writeWithin writes to the plugin's stdin under the same timeout discipline
 // as reads: a child that hands successfully but never reads stdin must not
 // pin sops on a full pipe. The writer handle is captured so an abandoned
-// goroutine can only ever touch this spawn's stdin.
-func (h *host) writeLineWithin(ctx context.Context, timeout time.Duration, req request) error {
+// goroutine can only ever touch this spawn's stdin. Used for the handshake
+// line and request lines alike (spec section 10: every step gets the timeout).
+func (h *host) writeWithin(ctx context.Context, timeout time.Duration, what string, write func() error) error {
 	type writeRes struct{ err error }
 	ch := make(chan writeRes, 1)
-	w := h.stdin
-	go func() { ch <- writeRes{writeLine(w, req)} }()
+	go func() { ch <- writeRes{write()} }()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
@@ -169,11 +177,17 @@ func (h *host) writeLineWithin(ctx context.Context, timeout time.Duration, req r
 		return r.err
 	case <-timer.C:
 		h.killLocked()
-		return fmt.Errorf("plugin %s: %w after %v writing %q request", h.binaryName, errWriteTimeout, timeout, req.Action)
+		return fmt.Errorf("plugin %s: %w after %v during %s", h.binaryName, errWriteTimeout, timeout, what)
 	case <-ctx.Done():
 		h.killLocked()
-		return fmt.Errorf("plugin %s: abandoned writing %q request: %w", h.binaryName, req.Action, ctx.Err())
+		return fmt.Errorf("plugin %s: abandoned during %s: %w", h.binaryName, what, ctx.Err())
 	}
+}
+
+func (h *host) writeLineWithin(ctx context.Context, timeout time.Duration, req request) error {
+	return h.writeWithin(ctx, timeout, fmt.Sprintf("write of %q request", req.Action), func() error {
+		return writeLine(h.stdin, req)
+	})
 }
 
 func (h *host) readHandshake(ctx context.Context, timeout time.Duration) (handshakeIn, error) {

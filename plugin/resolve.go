@@ -26,6 +26,15 @@ func validateBinaryName(name string) error {
 	return nil
 }
 
+// ResolveName resolves a bare plugin name (prefix optional) through PATH,
+// the same lookup a key operation uses; diagnostics may name a plugin the
+// way a config does.
+func ResolveName(pluginRef string) (string, error) {
+	name := strings.TrimSuffix(pluginRef, ".exe")
+	name = strings.TrimPrefix(name, "sops-plugin-")
+	return resolvePlugin(name, "")
+}
+
 func resolvePlugin(binaryName, pathOverride string) (string, error) {
 	if err := validateBinaryName(binaryName); err != nil {
 		return "", err
