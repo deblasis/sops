@@ -127,9 +127,9 @@ receives an action it does not implement MUST answer with the
 SOPS-side commitment: once a v2-speaking SOPS ships, SOPS intends to keep
 accepting version 1 handshakes for at least two years after that release,
 as a policy subject to maintainer ratification rather than a formal
-guarantee. A plugin written against v1 therefore stays usable for that
-whole window, and the
-additive-only policy means a v1 plugin never needs changes it did not choose.
+guarantee. Under that policy a plugin written against v1 stays usable for
+the whole window, and the additive-only policy means a v1 plugin never
+needs changes it did not choose.
 
 The handshake repeats after every respawn. Request ids restart at 1 on each
 spawn. Any output on stdout before the handshake response is a protocol
@@ -273,8 +273,9 @@ Size caps, enforced by SOPS:
   encrypted file is loaded, before any process spawns).
 - Captured stderr is capped at 8 KiB per process; anything beyond is
   truncated (and never blocks the plugin: SOPS discards the excess). Of
-  that capture, at most 1 KiB is ever surfaced per completed operation
-  (section 6).
+  that capture, at most 1 KiB is surfaced per event (completed operation
+  or startup failure, section 6); restart-budget exhaustion errors may
+  include the full captured remainder.
 - Protocol-violation error messages include at most a 256-byte prefix of the
   offending stdout line, so garbage that might echo key material is never
   shown whole.
