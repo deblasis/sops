@@ -61,10 +61,16 @@ Two disclosures are accepted:
 
 ## 3. Process model
 
-SOPS spawns one process per distinct plugin binary per key operation. The
-protocol is lockstep: exactly one outstanding request at a time, so lines on
-stdout can never interleave. SOPS closes the plugin's stdin when it is done
-with the process; a plugin exits 0 on stdin EOF.
+SOPS keeps one process per distinct plugin binary for the whole invocation
+and reuses it across key operations (the age-plugin connection-reuse
+pattern): a run with several plugin keys pays one spawn, one handshake, and
+one credential resolution per binary, not one per key. The protocol is
+lockstep: exactly one outstanding request at a time, so lines on stdout can
+never interleave, and key operations that share a binary serialize through
+the shared process. A plugin that exits cleanly between operations is
+transparently respawned: the next request gets a fresh process and a
+repeated handshake. SOPS closes the plugin's stdin when it is done with the
+process; a plugin exits 0 on stdin EOF.
 
 Respawn tolerance:
 
@@ -82,15 +88,15 @@ Respawn tolerance:
   applied the wrap before dying, and a resend could double-apply it. The
   failure names the exit status and carries the captured stderr
   (sections 6 and 7).
-- Those non-counted respawns are the ONLY respawns, and they are bounded:
-  SOPS makes at most 8 spawn attempts per key operation, then gives up with
-  an error, so a plugin that keeps exiting cleanly without answering cannot
-  hang SOPS.
-- The following failures fail the key operation IMMEDIATELY and are never
-  retried or resent (resending could double-apply a wrap): process death
-  with garbage or partial output, response id mismatch, an oversized
-  response line, and timeouts (section 10). There is no retry budget for
-  them; the failure surfaces to the user at once.
+- The clean-exit respawns above are the ONLY respawns, and they are
+  bounded: SOPS makes at most 8 spawn attempts per key operation, then
+  gives up with an error, so a plugin that keeps exiting cleanly without
+  answering cannot hang SOPS.
+- The following failures likewise fail the key operation IMMEDIATELY and
+  are never retried or resent (resending could double-apply a wrap): process
+  death with garbage or partial output, response id mismatch, an oversized
+  response line, and timeouts (section 10). The failure surfaces to the
+  user at once.
 - Handshake failures are fatal for the operation, with one exception: a
   clean exit (status 0) before any handshake byte respawns within the same
   8-attempt cap. A garbage or invalid handshake line, a timeout, a version
@@ -243,13 +249,12 @@ request never triggers exit-code inspection):
   handshake (the kubectl convention). SOPS does not parse exit codes, but a
   startup failure SHOULD exit non-zero and write the reason to stderr; SOPS
   surfaces the handshake read failure with the captured stderr attached,
-  captured stderr also accompanies restart-budget exhaustion errors, and a
-  non-zero pre-response exit is reported with its status and the captured
-  stderr.
-  Whatever a plugin writes to stderr is also surfaced after every completed
-  key operation, as a 1 KiB prefix of the 8 KiB per-process capture
-  (section 7), so warnings printed during an otherwise healthy session
-  reach the user.
+  and captured stderr also accompanies non-zero pre-response exits and
+  spawn-cap exhaustion. Whatever a plugin writes to stderr is also surfaced
+  after the key operation during which it was written, as a 1 KiB prefix of
+  the 8 KiB per-process capture (section 7), so warnings printed during an
+  otherwise healthy session reach the user; each captured line is surfaced
+  once, so a reused process does not repeat itself on every operation.
 
 ## 7. Framing
 
@@ -282,9 +287,8 @@ Size caps, enforced by SOPS:
   encrypted file is loaded, before any process spawns).
 - Captured stderr is capped at 8 KiB per process; anything beyond is
   truncated (and never blocks the plugin: SOPS discards the excess). Of
-  that capture, at most 1 KiB is surfaced per event (completed operation
-  or startup failure, section 6); restart-budget exhaustion errors may
-  include the full captured remainder.
+  that capture, at most 1 KiB is surfaced per event (completed operation,
+  startup failure, or crash, section 6).
 - Protocol-violation error messages include at most a 256-byte prefix of the
   offending stdout line, so garbage that might echo key material is never
   shown whole.

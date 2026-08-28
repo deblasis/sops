@@ -23,12 +23,17 @@ func TestAllowlistGate(t *testing.T) {
 	bin := buildTestPlugin(t)
 	prependPath(t, filepath.Dir(bin))
 	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
 
 	writeLocalConfig(t, "plugins:\n  allowed:\n    - testplugin\n")
 	k := NewMasterKey("testplugin", nil, 0, "")
 	require.NoError(t, k.Encrypt([]byte("datakey-0000000000000000")))
 
 	writeLocalConfig(t, "plugins:\n  allowed:\n    - otherplugin\n")
+	// the gate runs at spawn: drop the allowlisted host so the next operation
+	// has to spawn and hit the narrowed list
+	resetHostRegistry()
 	k2 := NewMasterKey("testplugin", nil, 0, "")
 	err := k2.Encrypt([]byte("datakey-0000000000000000"))
 	require.Error(t, err)
@@ -43,6 +48,9 @@ func TestNoAllowlistBlocksByDefault(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	// the binary resolves (the gate runs after resolution); only the gate blocks
 	prependPath(t, filepath.Dir(buildTestPlugin(t)))
+	// a host cached by an earlier test already passed its gate: start bare
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
 
 	k := NewMasterKey("testplugin", nil, 0, "")
 	err := k.Encrypt([]byte("datakey-0000000000000000"))

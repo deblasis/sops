@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -49,11 +50,20 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise", "empty_ok", "exit_clean_before_response", "crash_after_request":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise", "empty_ok", "exit_clean_before_response", "crash_after_request", "procid":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
 		os.Exit(2)
+	}
+	// procid needs a per-PROCESS identity that survives exits: each spawn is a
+	// fresh process, so the only state it can read back is a counter file
+	procNum := 0
+	if f := os.Getenv("SOPS_TESTPLUGIN_PROCFILE"); f != "" {
+		b, _ := os.ReadFile(f)
+		n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+		procNum = n + 1
+		os.WriteFile(f, []byte(strconv.Itoa(procNum)), 0o600)
 	}
 	in := bufio.NewReader(os.Stdin)
 	out := bufio.NewWriter(os.Stdout)
@@ -86,10 +96,6 @@ func main() {
 		return
 	}
 	writeJSON(out, hsOut{Protocol: "sops-plugin", Version: 1, Plugin: "testplugin", PluginVersion: "1.2.3"})
-	if mode == "stderrnoise" {
-		// healthy session plus a stderr warning the host must surface
-		fmt.Fprintln(os.Stderr, "running in fake mode")
-	}
 	if mode == "noread" {
 		// handshake done, then never read stdin again: the host's request
 		// write must hit its deadline, not block forever on a full pipe
@@ -167,6 +173,12 @@ func main() {
 				time.Sleep(time.Hour)
 			}
 		}
+		if mode == "stderrnoise" {
+			// healthy answers plus a per-request stderr warning the host must
+			// surface exactly once per operation (process reuse must not
+			// re-warn old lines)
+			fmt.Fprintf(os.Stderr, "fake mode: handling %s\n", r.Action)
+		}
 		switch r.Action {
 		case "encrypt":
 			lastPlain = r.Plaintext
@@ -182,7 +194,13 @@ func main() {
 				continue
 			}
 			wrapped := "test.v1." + base64.StdEncoding.EncodeToString(r.Plaintext)
-			writeJSON(out, resp{ID: r.ID, OK: true, Wrapped: wrapped, KeyRef: "testkey/primary"})
+			keyRef := "testkey/primary"
+			if mode == "procid" {
+				// every answer in this process carries the same identity: the
+				// reuse tests compare key refs to count live plugin processes
+				keyRef = fmt.Sprintf("testkey/proc%d", procNum)
+			}
+			writeJSON(out, resp{ID: r.ID, OK: true, Wrapped: wrapped, KeyRef: keyRef})
 		case "decrypt":
 			if mode == "echo" {
 				// answers the stored plaintext no matter which blob is asked for

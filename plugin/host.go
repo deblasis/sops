@@ -44,7 +44,7 @@ type host struct {
 	pluginName    string
 	pluginVersion string
 	nextID        int64
-	restarts      int
+	stderrMark    int // stderr bytes already surfaced: a reused process warns once per line
 	mu            sync.Mutex
 }
 
@@ -79,8 +79,9 @@ func (h *host) start(ctx context.Context) error {
 		stdin.Close()
 		return err
 	}
-	// kept across kill: the last child's stderr explains budget exhaustion
+	// kept across kill: the last child's stderr explains its death
 	h.stderr = &limitedBuffer{max: maxStderrBytes}
+	h.stderrMark = 0
 	cmd.Stderr = h.stderr
 	if err := cmd.Start(); err != nil {
 		stdin.Close()
@@ -91,7 +92,7 @@ func (h *host) start(ctx context.Context) error {
 	h.stdout = bufio.NewReader(stdoutPipe) // fresh per spawn: never splice output across processes
 	h.nextID = 1                           // ids restart at 1 per spawn
 	if err := writeLine(h.stdin, handshakeOut{Protocol: protocolName, MaxVersion: protocolVersion}); err != nil {
-		h.kill()
+		h.killLocked()
 		return fmt.Errorf("%w: plugin %s: handshake write: %v%s", errStartupFailed, h.binaryName, err, h.startupStderr())
 	}
 	hs, err := h.readHandshake(ctx)
@@ -102,18 +103,18 @@ func (h *host) start(ctx context.Context) error {
 		if errors.Is(err, io.EOF) && h.exitedCleanly() {
 			return errHandshakeCleanExit
 		}
-		h.kill()
+		h.killLocked()
 		if suffix := h.startupStderr(); suffix != "" {
 			return fmt.Errorf("%w%s", err, suffix)
 		}
 		return err
 	}
 	if hs.Protocol != protocolName || hs.Plugin == "" {
-		h.kill()
+		h.killLocked()
 		return fmt.Errorf("%w: plugin %s: bad handshake fields from %s%s", errStartupFailed, h.binaryName, path, h.startupStderr())
 	}
 	if hs.Version > protocolVersion || hs.Version < 1 {
-		h.kill()
+		h.killLocked()
 		return fmt.Errorf("%w: plugin %s (%s %s) wants protocol version %d, sops supports 1..%d%s",
 			errVersionRefused, h.binaryName, hs.Plugin, hs.PluginVersion, hs.Version, protocolVersion, h.startupStderr())
 	}
@@ -142,10 +143,10 @@ func (h *host) readLineWithin(ctx context.Context, what string) ([]byte, error) 
 	case r := <-ch:
 		return r.line, r.err
 	case <-timer.C:
-		h.kill()
+		h.killLocked()
 		return nil, fmt.Errorf("plugin %s: timeout after %v during %s", h.binaryName, h.timeout, what)
 	case <-ctx.Done():
-		h.kill()
+		h.killLocked()
 		return nil, fmt.Errorf("plugin %s: abandoned during %s: %w", h.binaryName, what, ctx.Err())
 	}
 }
@@ -165,10 +166,10 @@ func (h *host) writeLineWithin(ctx context.Context, req request) error {
 	case r := <-ch:
 		return r.err
 	case <-timer.C:
-		h.kill()
+		h.killLocked()
 		return fmt.Errorf("plugin %s: %w after %v writing %q request", h.binaryName, errWriteTimeout, h.timeout, req.Action)
 	case <-ctx.Done():
-		h.kill()
+		h.killLocked()
 		return fmt.Errorf("plugin %s: abandoned writing %q request: %w", h.binaryName, req.Action, ctx.Err())
 	}
 }
@@ -225,15 +226,17 @@ func (h *host) crashError(action string, werr error) error {
 		h.binaryName, code, action, h.startupStderr())
 }
 
-// do runs one lockstep request. Restart accounting:
+// do runs one lockstep request. Failure accounting is per call: the host is
+// shared across operations (see key.go), so nothing may leak from one
+// operation's misbehavior into the next.
 //   - clean exit (status 0, no partial line) before any response byte,
 //     whether it reads as EOF on stdout or a broken stdin pipe: respawn and
-//     resend WITHOUT counting; clean exits after complete responses likewise
+//     resend, never counted; clean exits after complete responses likewise
 //     never count, so one-shot plugins survive any number of keys
-//   - non-zero exit before any response byte: count and fail immediately,
-//     NEVER resend (the wrap may already have been applied)
-//   - garbage output, partial lines, timeouts, id mismatches: count toward
-//     maxRestarts and are never resent (a resend could double-apply)
+//   - non-zero exit before any response byte: fail immediately and NEVER
+//     resend (the wrap may already have been applied)
+//   - garbage output, partial lines, timeouts, id mismatches: fail
+//     immediately, never resent (a resend could double-apply)
 //   - ok:false is an answer, not a respawn trigger
 func (h *host) do(ctx context.Context, req request) (*response, error) {
 	h.mu.Lock()
@@ -244,17 +247,14 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 		// bound respawns even when nothing counts (plugin that exits cleanly
 		// forever must not hang sops)
 		if attempts > 2*(maxRestarts+1) {
-			return nil, fmt.Errorf("plugin %s: gave up after %d spawn attempts for action %q", h.binaryName, attempts-1, req.Action)
+			return nil, fmt.Errorf("plugin %s: gave up after %d spawn attempts for action %q%s",
+				h.binaryName, attempts-1, req.Action, h.startupStderr())
 		}
 		if h.cmd == nil || h.cmd.Process == nil {
-			if h.restarts >= maxRestarts {
-				return nil, fmt.Errorf("plugin %s: restart budget exhausted after %d restarts (stderr: %s)",
-					h.binaryName, h.restarts, h.stderrString())
-			}
 			if err := h.start(ctx); err != nil {
 				if errors.Is(err, errHandshakeCleanExit) {
 					// clean exit at the handshake: respawn within the spawn
-					// cap above, never counted against the restart budget
+					// cap above, never counted
 					continue
 				}
 				return nil, err
@@ -264,12 +264,11 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 		h.nextID++
 		if err := h.writeLineWithin(ctx, req); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil, err // caller gave up: not plugin misbehavior, do not count
+				return nil, err // caller gave up: not plugin misbehavior
 			}
 			if errors.Is(err, errWriteTimeout) {
-				// a full pipe is plugin misbehavior: counted, never resent
-				h.kill()
-				h.restarts++
+				// a full pipe is plugin misbehavior: fail, never resend
+				h.killLocked()
 				return nil, err
 			}
 			// stdin broke mid-write: a child that exited cleanly is
@@ -279,7 +278,6 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 			if werr == nil {
 				continue
 			}
-			h.restarts++
 			return nil, h.crashError(req.Action, werr)
 		}
 		resp, err := h.readResponse(ctx, req.ID, req.Action)
@@ -294,15 +292,13 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 			if werr == nil {
 				continue // clean death before any response byte: resend on a fresh child
 			}
-			h.restarts++
 			return nil, h.crashError(req.Action, werr)
 		}
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			h.kill()
-			return nil, err // caller gave up: not plugin misbehavior, do not count
+			h.killLocked()
+			return nil, err // caller gave up: not plugin misbehavior
 		}
-		h.kill()
-		h.restarts++
+		h.killLocked()
 		return nil, err
 	}
 }
@@ -359,10 +355,17 @@ func (h *host) startupStderr() string {
 	return "; stderr: " + s
 }
 
-// kill destroys the process tree and detaches all pipes. Idempotent.
-// Counting toward the restart budget is the caller's job: only some deaths
-// count (see do).
+// kill destroys the process tree and detaches all pipes. Idempotent. Takes
+// mu, so it is safe against an operation in flight on the host (the registry
+// kills discarded hosts this way).
 func (h *host) kill() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.killLocked()
+}
+
+// killLocked is kill for callers already holding mu: every path inside do().
+func (h *host) killLocked() {
 	if h.cmd == nil {
 		return
 	}
@@ -374,6 +377,18 @@ func (h *host) kill() {
 	h.cmd = nil
 	h.stdin = nil
 	h.stdout = nil
+}
+
+// opSnapshot captures post-operation state under the lock. Once the host is
+// back in the registry another key's operation may respawn it and rewrite
+// these fields, so callers must snapshot before releasing. Marking stderr
+// keeps a reused process from re-warning the same lines on every operation.
+func (h *host) opSnapshot() (version, stderr string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	s, mark := h.stderr.since(h.stderrMark)
+	h.stderrMark = mark
+	return h.pluginVersion, s
 }
 
 // prefixOf renders at most n bytes of raw stdout; garbage must never reach an
@@ -408,6 +423,18 @@ func (l *limitedBuffer) Write(p []byte) (int, error) {
 	}
 	l.buf.Write(p)
 	return len(p), nil
+}
+
+// since returns the bytes appended after the given mark plus the new mark;
+// a mark past the cap reads as "nothing new", the dropped bytes are gone
+func (l *limitedBuffer) since(mark int) (string, int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	b := l.buf.Bytes()
+	if mark > len(b) {
+		mark = len(b)
+	}
+	return string(b[mark:]), len(b)
 }
 
 func (l *limitedBuffer) String() string {

@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,10 @@ func newTestKey(t *testing.T, mode string) *MasterKey {
 	bin := buildTestPlugin(t)
 	allowTestPlugin(t, bin)
 	t.Setenv("SOPS_TESTPLUGIN_MODE", mode)
+	// a cached host from an earlier test would run under ITS mode: reset so
+	// every test spawns under the mode it just set
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
 	return NewMasterKey("testplugin", map[string]any{"k": "v"}, 2*time.Second, bin)
 }
 
@@ -206,8 +211,8 @@ func TestEncryptCapturesHostVersion(t *testing.T) {
 	assert.Equal(t, "1.2.3", k.PluginVersion)
 }
 
-// stderr from an otherwise-successful operation must reach the user's log,
-// not only budget-exhaustion errors
+// stderr written during an operation must reach the user's log exactly once
+// per operation: a reused process must not re-warn lines it already warned
 func TestStderrSurfacedAtWarnAfterCompletedOps(t *testing.T) {
 	hook := &captureHook{}
 	logger := logrus.StandardLogger()
@@ -230,5 +235,58 @@ func TestStderrSurfacedAtWarnAfterCompletedOps(t *testing.T) {
 		}
 	}
 	require.Len(t, warned, 2, "one warn per completed operation: %v", hook.entries)
-	assert.Contains(t, warned[0], "running in fake mode")
+	assert.Contains(t, warned[0], "handling encrypt")
+	assert.Contains(t, warned[1], "handling decrypt")
+}
+
+// process reuse: two MasterKeys on the same binary+path must share one plugin
+// process. The procid mode bakes a per-process counter into key_ref, so equal
+// refs prove one process and a changed ref proves a fresh spawn. The counter
+// lives in a file pointed at by SOPS_TESTPLUGIN_PROCFILE: each spawn is a
+// fresh process, so in-memory state cannot survive the exits.
+func TestProcessReuseAcrossOperations(t *testing.T) {
+	bin := buildTestPlugin(t)
+	allowTestPlugin(t, bin)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "procid")
+	t.Setenv("SOPS_TESTPLUGIN_PROCFILE", filepath.Join(t.TempDir(), "count"))
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
+
+	k1 := NewMasterKey("testplugin", nil, 2*time.Second, bin)
+	require.NoError(t, k1.Encrypt([]byte("datakey-0000000000000000")))
+	assert.Equal(t, "testkey/proc1", k1.KeyRef)
+
+	k2 := NewMasterKey("testplugin", map[string]any{"other": true}, 2*time.Second, bin)
+	require.NoError(t, k2.Encrypt([]byte("datakey-0000000000000000")))
+	assert.Equal(t, k1.KeyRef, k2.KeyRef, "two keys, one process")
+
+	// the cache dies with a reset: the next operation spawns a new process
+	ResetProcessCache()
+	k3 := NewMasterKey("testplugin", nil, 2*time.Second, bin)
+	require.NoError(t, k3.Encrypt([]byte("datakey-0000000000000000")))
+	assert.Equal(t, "testkey/proc2", k3.KeyRef)
+}
+
+// with reuse the host outlives one operation: misbehavior must not carry a
+// budget across ops, and a failed op must evict so the next op starts fresh
+func TestBudgetIsPerOperation(t *testing.T) {
+	bin := buildTestPlugin(t)
+	allowTestPlugin(t, bin)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "garbage")
+	resetHostRegistry()
+	t.Cleanup(resetHostRegistry)
+
+	for i := 0; i < maxRestarts+2; i++ {
+		k := NewMasterKey("testplugin", nil, 2*time.Second, bin)
+		err := k.Encrypt([]byte("datakey-0000000000000000"))
+		require.Error(t, err, "op %d", i)
+		assert.Contains(t, err.Error(), "violation")
+		assert.NotContains(t, err.Error(), "budget", "op %d", i)
+	}
+
+	// eviction, not a spent budget: with the plugin healthy again the very
+	// next operation succeeds on a fresh spawn
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
+	k := NewMasterKey("testplugin", nil, 2*time.Second, bin)
+	require.NoError(t, k.Encrypt([]byte("datakey-0000000000000000")))
 }

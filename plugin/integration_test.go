@@ -35,6 +35,10 @@ func e2eSetup(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "local.yaml")
 	require.NoError(t, os.WriteFile(cfgPath, []byte("plugins:\n  allowed:\n    - testplugin\n"), 0o600))
 	t.Setenv("SOPS_LOCAL_CONFIG", cfgPath)
+	// a host cached from an earlier test would run under ITS mode: reset the
+	// per-process cache so each test spawns under the env it just set
+	plugin.ResetProcessCache()
+	t.Cleanup(plugin.ResetProcessCache)
 }
 
 func newE2EPluginKey(timeout time.Duration) *plugin.MasterKey {
@@ -223,6 +227,9 @@ func TestE2EMixedGroupRescue(t *testing.T) {
 
 	// the plugin refuses at decrypt time; the age key in the same group rescues
 	t.Setenv("SOPS_TESTPLUGIN_MODE", "authfail")
+	// the cached healthy host must not answer this decrypt: its mode was
+	// baked in at spawn, so drop it and let the authfail child spawn
+	plugin.ResetProcessCache()
 	gotKey, err := loaded.Metadata.GetDataKey()
 	require.NoError(t, err)
 	assert.Equal(t, dataKey, gotKey)

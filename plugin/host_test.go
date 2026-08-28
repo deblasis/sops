@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,8 +71,7 @@ func TestOneshotPluginSurvivesManyKeys(t *testing.T) {
 		require.True(t, resp.OK)
 		assert.Equal(t, "testkey/primary", resp.KeyRef)
 	}
-	// clean exits never drain the budget
-	assert.Equal(t, 0, h.restarts)
+	// every op crossed a clean exit and a respawn: clean exits never fail an op
 }
 
 func TestAuthFailureIsAnAnswerNotARespawn(t *testing.T) {
@@ -80,18 +81,18 @@ func TestAuthFailureIsAnAnswerNotARespawn(t *testing.T) {
 	require.NotNil(t, resp.Error)
 	assert.False(t, resp.OK)
 	assert.Equal(t, errCodeAuthFailed, resp.Error.Code)
-	assert.Equal(t, 0, h.restarts)
 }
 
-func TestGarbageCountsTowardBudget(t *testing.T) {
+// failure accounting is per operation: a shared host must not accumulate
+// misbehavior across ops, each violation fails its own operation at once
+func TestGarbageFailsEveryOperationImmediately(t *testing.T) {
 	h := newTestHost(t, "garbage")
-	for i := 0; i < maxRestarts; i++ {
+	for i := 0; i < maxRestarts+2; i++ {
 		_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
 		require.Error(t, err, "do %d", i)
+		assert.Contains(t, err.Error(), "violation")
+		assert.NotContains(t, err.Error(), "budget", "op %d", i)
 	}
-	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "budget")
 }
 
 func TestTimeoutKillsAndErrors(t *testing.T) {
@@ -138,13 +139,12 @@ func TestStartupFailureIsFatalForKey(t *testing.T) {
 }
 
 func TestHandshakeCleanExitRespawnsWithinCap(t *testing.T) {
-	// exit 0 before any handshake byte is respawnable: never fatal, never
-	// counted, but bounded by the per-operation spawn cap
+	// exit 0 before any handshake byte is respawnable: never fatal, but
+	// bounded by the per-operation spawn cap
 	h := newTestHost(t, "clean_exit_startup")
 	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "spawn attempts")
-	assert.Equal(t, 0, h.restarts, "clean exits never count against the budget")
 }
 
 func TestHandshakeTimeoutNamesPlugin(t *testing.T) {
@@ -166,7 +166,6 @@ func TestContextCancelAbandonsPromptlyWithoutCounting(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "got: %v", err)
 	assert.Less(t, time.Since(start), h.timeout, "ctx cancellation must beat the host timeout")
-	assert.Equal(t, 0, h.restarts, "caller cancellation is not plugin misbehavior")
 	assert.Nil(t, h.cmd, "abandoned child must still be killed")
 }
 
@@ -181,7 +180,6 @@ func TestWriteTimeoutWhenChildNeverReads(t *testing.T) {
 	assert.Contains(t, err.Error(), "encrypt")
 	assert.Less(t, time.Since(start), 4*time.Second)
 	assert.Nil(t, h.cmd, "wedged process must be gone")
-	assert.Equal(t, 1, h.restarts, "a stalled write counts once, then fails")
 }
 
 func TestUnsolicitedLineIsViolation(t *testing.T) {
@@ -189,7 +187,6 @@ func TestUnsolicitedLineIsViolation(t *testing.T) {
 	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "999")
-	assert.Equal(t, 1, h.restarts)
 }
 
 // always exits 0 after reading the request: the respawn path must churn
@@ -202,14 +199,20 @@ func TestCleanExitBeforeResponseBoundedBySpawnCap(t *testing.T) {
 }
 
 // the child read the full request, then died non-zero: the wrap may already
-// have been applied, so the operation must fail at once, naming the exit
-// status and the child's stderr, and never resend
+// have been applied, so exactly one spawn and no resend; the exit status and
+// the child's stderr must name the crash
 func TestCrashAfterRequestFailsWithoutResend(t *testing.T) {
+	countPath := filepath.Join(t.TempDir(), "count")
+	t.Setenv("SOPS_TESTPLUGIN_PROCFILE", countPath)
 	h := newTestHost(t, "crash_after_request")
 	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 7")
 	assert.Contains(t, err.Error(), "crashed on purpose")
+	// exactly one spawn: a resend would have bumped the counter twice
+	got, rerr := os.ReadFile(countPath)
+	require.NoError(t, rerr)
+	assert.Equal(t, "1", strings.TrimSpace(string(got)))
 }
 
 func TestNoKeyLeakInErrors(t *testing.T) {
