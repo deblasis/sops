@@ -20,7 +20,19 @@ process that answers a single request and exits cleanly; both are first-class.
 
 Everything a plugin MUST do is in this document. A minimal conforming plugin
 is roughly 100 lines of code in any language that can read lines from stdin,
-write lines to stdout, and access environment credentials.
+write lines to stdout, and access environment credentials (section 14 has
+one, complete).
+
+Two kinds of rules live here, and they bind differently:
+
+- Protocol rules are the MUSTs, MUST NOTs, and SHOULDs aimed at
+  implementers: plugin authors, and the SOPS-side host. They are normative
+  for anyone claiming conformance to sops-plugin/1.
+- Project commitments are promises about how SOPS itself will evolve: the
+  deprecation window and dual-stack support (section 4), the governance and
+  naming policy (section 13). They are PROPOSED here and bind SOPS only
+  once, and in the form, the SOPS maintainers ratify them; a plugin can
+  rely on them when a SOPS release ships them, not before.
 
 ## 2. Threat model
 
@@ -132,7 +144,10 @@ Field meanings:
   SOPS records it in file metadata; `sops plugins verify` requires it to look
   like a version.
 
-Version policy, stated as rules rather than intentions:
+Version policy, stated as rules rather than intentions. The first two rules
+bind any implementation of the protocol; the last two are project
+commitments (section 1): SOPS is asked to honor them, and a plugin can rely
+on them from the first SOPS release that does.
 
 - Version 1 is FROZEN. No wire change lands in 1.x, however small: any
   change to the meaning of an existing field, error code, or framing rule
@@ -143,16 +158,18 @@ Version policy, stated as rules rather than intentions:
   error code (section 6), not exit or hang. Together with the additive
   rule this means a plugin written against 1.0 keeps working unmodified on
   every later 1.x, and a v1 plugin never needs changes it did not choose.
-- Deprecation is measured in releases, not years. When a SOPS release adds
-  version 2 support, that release and every release after it MUST accept
-  version 1 handshakes for a window of at least the four most recent SOPS
-  minor releases or 18 months, whichever is longer; removal before the
-  window closes is a release-blocking bug, not a judgment call.
-- Dual-stack is the mechanism: because unknown actions are answered with
-  `unsupported_action` and unknown fields ignored, a v2-speaking SOPS can
-  negotiate per plugin, speaking v1 to plugins that offer v1 for the whole
-  window. A plugin needs no v2 code to survive the transition and no
-  notice to keep working.
+- Deprecation is anchored, not relative (PROPOSED). When a SOPS release
+  adds version 2 support, every SOPS release from that one onward MUST
+  accept version 1 handshakes for the longer of: the four sops minor
+  releases that follow the v2 release, or 18 months counted from the v2
+  release. Removal before the window closes is a release-blocking bug, not
+  a judgment call. Anchoring both bounds to the v2 release keeps the window
+  from shifting as time passes.
+- Dual-stack is the mechanism (PROPOSED): because unknown actions are
+  answered with `unsupported_action` and unknown fields ignored, a
+  v2-speaking SOPS can negotiate per plugin, speaking v1 to plugins that
+  offer v1 for the whole window. A plugin needs no v2 code to survive the
+  transition and no notice to keep working.
 
 The handshake repeats after every respawn. Request ids restart at 1 on each
 spawn. Any output on stdout before the handshake response is a protocol
@@ -250,23 +267,28 @@ credential failures against cloud KMS backends is how accounts get locked
 out. A plugin that wants retries (for transient backend errors) owns that
 logic itself before answering.
 
-Exit codes (inspected only when a request went unanswered, since an answered
-request never triggers exit-code inspection):
+Exit codes and stderr. SOPS distinguishes only zero from non-zero; it never
+parses specific code values, so the numbered conventions below are guidance
+for plugin authors, not something SOPS keys on. Exit-code inspection
+happens only when a request went unanswered, since an answered request
+never triggers it:
 
-- 0: clean exit. After a complete response, this is the normal one-shot exit.
-- 1: generic failure mid-protocol.
-- 2: authentication or configuration failure at startup, before the
-  handshake (the kubectl convention). SOPS does not parse exit codes, but a
-  startup failure SHOULD exit non-zero and write the reason to stderr; SOPS
-  surfaces the handshake read failure with the captured stderr attached,
-  and captured stderr also accompanies non-zero pre-response exits and
-  spawn-cap exhaustion. Whatever a plugin writes to stderr is also surfaced
-  with the first completed key operation after it was written (normally the
-  one it was written during; a line that races the response can slip to the
-  next one), as a 1 KiB prefix of the 8 KiB per-process capture (section 7),
-  so warnings printed during an otherwise healthy session reach the user;
-  each captured line is surfaced once, so a reused process does not repeat
-  itself on every operation.
+- Exit 0 is a clean exit. After a complete response it is the normal
+  one-shot exit; before any response byte it triggers a bounded respawn and
+  the request is resent (section 3).
+- Any non-zero exit before a response byte fails the operation immediately
+  and the request is never resent (section 3). A plugin that fails at
+  startup, before or during the handshake, SHOULD exit non-zero and write
+  the reason to stderr: SOPS attaches the captured stderr to the failure,
+  so the plugin's own words reach the user.
+
+Whatever a plugin writes to stderr is also surfaced with the first
+completed key operation after it was written (normally the one it was
+written during; a line that races the response can slip to the next one),
+as a 1 KiB prefix of the 8 KiB per-process capture (section 7), so warnings
+printed during an otherwise healthy session reach the user; each captured
+line is surfaced once, so a reused process does not repeat itself on every
+operation.
 
 ## 7. Framing
 
@@ -384,7 +406,11 @@ PATH resolution only and can never authorize an absolute path that
 repository content picked. A full roundtrip with a `path:`-override key
 therefore needs BOTH entries: the absolute path entry gates the
 encrypt-side spawn, while decrypt resolves by binary name from PATH
-(metadata carries no path) and needs the name entry.
+(metadata carries no path) and needs the name entry. Matching is
+byte-exact on every OS, case included: on Windows, an entry must repeat
+the resolved path's exact drive-letter and component case, or it does not
+match (a differently-cased entry does not even authorize, it fails
+closed).
 
 Pinning is opt-in integrity. The threat model above (section 2) trusts the
 local machine's PATH, the same trust class as age plugins and kubectl
@@ -395,7 +421,11 @@ to execute unless the digest matches, in lowercase hex. A pin never grants
 execution by itself, a malformed pin value blocks rather than being
 ignored, and an unpinned binary is unaffected. A plugin upgrade changes
 the binary, so a pin must be updated deliberately when the user chooses to
-trust the new build.
+trust the new build. One caution follows from byte-exact matching: a pin
+keyed under a spelling that never matches its allowlist entry (a different
+case or separator form) is INERT, not an error, and the run proceeds
+unpinned. Keep every pin key identical, character for character, to its
+entry string.
 
 A NOTE on sharing the file with creation rules: SOPS discovers a repo's
 `.sops.yaml` by walking up from the file being encrypted, and `~/.sops.yaml`
@@ -551,10 +581,15 @@ Key service. SOPS's local, in-process key service client runs plugins
 executables by default. Over the wire the plugin key carries binary name,
 config (verbatim JSON, opaque), and key reference; the path override and
 per-key timeout do not cross the wire, and server-side spawns obey the
-SERVER's allowlist. The local client wraps plugin keys in-process against
-the caller's own key object (the key reference the plugin answers with
-cannot cross the wire), so a plugin key wrapped by a remote key service is
-written with an empty `key_ref` until the file is re-wrapped locally.
+SERVER's allowlist. (On the keyservice wire format itself:
+protocol-buffer field 3 of the plugin key message is reserved;
+implementations MUST NOT use it and MUST ignore it if set.) The local
+client wraps plugin keys in-process against the caller's own key object
+(the key reference and the handshake-reported `plugin_version` the plugin
+answers with cannot cross the wire: the response frame carries only the
+wrapped bytes), so a plugin key wrapped by a remote key service is written
+with an empty `key_ref` and an empty `plugin_version` until the file is
+re-wrapped locally.
 Operationally that means `NeedsRotation` is blind for such a file: with no
 recorded key reference there is nothing to compare against the rule, so
 rotation checks report nothing until the file is re-wrapped locally
@@ -570,13 +605,15 @@ Two diagnostics ship in the CLI:
   consulted, nothing beyond the handshake is executed. This is the tool for
   "why does sops not find my plugin" questions (not on PATH, not
   executable, a shadowing `.cmd` file on Windows).
-- `sops plugins verify <binary>` runs four positive checks against an
+- `sops plugins verify <binary|name>` runs four positive checks against an
   explicitly named binary and prints one PASS/FAIL line per check. The
   argument is a filesystem path to the plugin executable (on Windows the
-  path must end in `.exe`). An optional `--config '<json>'` sends the given
-  JSON object as the config on every encrypt request, for plugins that
-  require config; without the flag verify sends no config at all, which is
-  itself a conformance case (section 5):
+  path must end in `.exe`), or a bare plugin name, prefix optional
+  (`myplugin` or `sops-plugin-myplugin`), which resolves through PATH
+  exactly as a key operation resolves it. An optional `--config '<json>'`
+  sends the given JSON object as the config on every encrypt request, for
+  plugins that require config; without the flag verify sends no config at
+  all, which is itself a conformance case (section 5):
 
   1. handshake: the version exchange succeeds and `plugin_version` is
      semver-ish;
@@ -599,8 +636,134 @@ matrix (garbage output, wrong ids, oversized lines, hangs) is enforced by
 the SOPS-side host on every real session, not by verify: a third-party
 binary cannot be made to simulate those faults on demand.
 
-## 13. Spec changelog
+## 13. Governance and plugin names
+
+This section is policy, not wire protocol; like the section 4 commitments
+it is PROPOSED and binds the project only once ratified (section 1).
+
+Ownership of this specification goes with SOPS: it is maintained in the
+sops repository, and changes to the frozen parts of version 1 (field
+meanings, framing, error codes) require a new major version, while
+additive changes land as 1.x minors (section 4). Whoever maintains sops
+ratifies the protocol; a fork that changes the wire is no longer speaking
+sops-plugin/1.
+
+There is no central registry of plugin names. The `sops-plugin-` prefix is
+a convention, not a reservation: any author may publish a plugin under any
+charset-valid name (section 9), and SOPS does not arbitrate collisions.
+Resolution is local and the first PATH hit wins, so a collision is a
+per-machine install problem: visible with `sops plugins list`, resolvable
+by PATH order, uninstall, or a `path:` override. Plugin authors SHOULD
+choose a distinctive name (their product or backend, not a generic word)
+and treat the wrapped-key prefix (section 8) as their namespace: a plugin
+that follows section 8 refuses blobs whose prefix it does not own, which
+is what keeps two name-colliding plugins from decrypting each other's
+wrapped keys.
+
+## 14. Appendix: a minimal plugin, complete
+
+This is a conforming plugin in about 80 lines of Python. It wraps data
+keys with AES-GCM under a master secret from the environment
+(`SOPS_MINIMAL_MASTER_KEY`, 32 chars), so decrypt needs nothing but the
+blob and the environment (section 8). Install it on PATH as
+`sops-plugin-minimal`, add `minimal` to `plugins.allowed`, and
+`sops plugins verify minimal` should pass all four checks.
+
+```python
+#!/usr/bin/env python3
+"""Minimal sops-plugin/1 plugin: AES-GCM under an env master secret."""
+
+import base64
+import json
+import os
+import sys
+
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+PREFIX = "minimal.v1."
+ERRORS = {"invalid_request", "unsupported_action", "config_error",
+          "auth_failed", "key_unavailable", "internal"}
+
+
+def reply(obj):
+    # one JSON line per response, flushed now (section 7)
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def fail(req_id, code, message):
+    assert code in ERRORS
+    reply({"id": req_id, "ok": False,
+           "error": {"code": code, "message": message}})
+
+
+def master_key():
+    raw = os.environ.get("SOPS_MINIMAL_MASTER_KEY", "")
+    return raw.encode() if len(raw) == 32 else None
+
+
+def wrap(req):
+    key = master_key()
+    if key is None:
+        return fail(req["id"], "auth_failed",
+                    "SOPS_MINIMAL_MASTER_KEY must be 32 characters")
+    nonce = os.urandom(12)
+    ct = AESGCM(key).encrypt(nonce, base64.b64decode(req["plaintext"]), None)
+    blob = base64.b64encode(nonce + ct).decode()
+    reply({"id": req["id"], "ok": True,
+           "wrapped": PREFIX + blob, "key_ref": "env:SOPS_MINIMAL_MASTER_KEY"})
+
+
+def unwrap(req):
+    key = master_key()
+    wrapped = req.get("wrapped", "")
+    if key is None or not wrapped.startswith(PREFIX):
+        return fail(req["id"], "invalid_request",
+                    "not a " + PREFIX + " blob (or no master key set)")
+    try:
+        raw = base64.b64decode(wrapped[len(PREFIX):])
+        pt = AESGCM(key).decrypt(raw[:12], raw[12:], None)
+    except Exception:
+        return fail(req["id"], "invalid_request", "blob failed to decrypt")
+    reply({"id": req["id"], "ok": True,
+           "plaintext": base64.b64encode(pt).decode()})
+
+
+def main():
+    hs = json.loads(sys.stdin.readline())
+    if hs.get("protocol") != "sops-plugin" or hs.get("max_version", 0) < 1:
+        sys.exit(2)  # startup failure: non-zero, reason to stderr
+    reply({"protocol": "sops-plugin", "version": 1,
+           "plugin": "minimal", "plugin_version": "1.0.0"})
+    for line in sys.stdin:
+        try:
+            req = json.loads(line)
+        except ValueError:
+            fail(0, "invalid_request", "unparseable request line")
+            continue
+        if req.get("action") == "encrypt":
+            wrap(req)
+        elif req.get("action") == "decrypt":
+            unwrap(req)
+        else:
+            fail(req.get("id", 0), "unsupported_action",
+                 str(req.get("action")))
+    sys.exit(0)  # stdin closed: clean exit, so sops can tell stop from crash
+
+
+if __name__ == "__main__":
+    main()
+```
+
+What to notice, since each point is a spec rule in disguise: the response
+is flushed per line (section 7); `ok:false` with a complete error object is
+how every failure is answered, including the undecryptable blob (sections
+5 and 6, and conformance check 3); the prefix check before decrypt is what
+separates `invalid_request` from `key_unavailable` (section 8); the loop
+serves any number of requests but exiting at EOF is equally correct, since
+clean exits respawn transparently (section 3); and nothing writes to
+stdout except protocol lines (section 7).
+
+## 15. Spec changelog
 
 - v1 (this document): initial protocol specification.
-- v1 wire note: protocol-buffer field 3 of the plugin key message is
-  reserved; implementations MUST NOT use it and MUST ignore it if set.
