@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/context"
@@ -160,4 +161,21 @@ func TestPluginKeyBadConfigRejected(t *testing.T) {
 	_, err := srv.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("dk")})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `invalid plugin config JSON for plugin "testplugin"`)
+}
+
+// the 64 KiB caps mirror stores/config: the wire must enforce them even when
+// a caller never went through config or file loading
+func TestPluginKeyWireCaps(t *testing.T) {
+	srv := Server{EnablePlugins: true}
+	bigConfig := `{"pad":"` + strings.Repeat("a", maxPluginConfigBytes) + `"}`
+	pk := &PluginKey{BinaryName: "testplugin", Config: bigConfig}
+	k := &Key{KeyType: &Key_PluginKey{PluginKey: pk}}
+	_, err := srv.Encrypt(context.Background(), &EncryptRequest{Key: k, Plaintext: []byte("dk")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config exceeds")
+
+	pk.Config = `{}`
+	_, err = srv.Decrypt(context.Background(), &DecryptRequest{Key: k, Ciphertext: make([]byte, maxPluginWrappedBytes+1)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrapped key exceeds")
 }

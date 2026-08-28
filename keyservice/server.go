@@ -30,6 +30,14 @@ type Server struct {
 // gated: remote clients must not select server-side executables by default
 var errPluginsDisabled = status.Error(codes.PermissionDenied, "plugin keys are disabled on this keyservice; start it with --enable-plugins")
 
+// wire-side mirror of the caps enforced at config/file load: defense in depth
+// so an oversized blob dies at the server boundary even if a caller bypassed
+// the loading checks
+const (
+	maxPluginConfigBytes  = 64 * 1024
+	maxPluginWrappedBytes = 64 * 1024
+)
+
 func (ks *Server) encryptWithPgp(key *PgpKey, plaintext []byte) ([]byte, error) {
 	pgpKey := pgp.NewMasterKeyFromFingerprint(key.Fingerprint)
 	err := pgpKey.Encrypt(plaintext)
@@ -111,6 +119,9 @@ func (ks *Server) encryptWithAge(key *AgeKey, plaintext []byte) ([]byte, error) 
 
 // pluginConfigFromJSON parses the opaque config blob sent over the wire
 func pluginConfigFromJSON(binaryName, config string) (map[string]any, error) {
+	if len(config) > maxPluginConfigBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "plugin %q config exceeds %d bytes", binaryName, maxPluginConfigBytes)
+	}
 	var c map[string]any
 	if err := json.Unmarshal([]byte(config), &c); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid plugin config JSON for plugin %q: %v", binaryName, err)
@@ -136,6 +147,9 @@ func (ks *Server) encryptWithPlugin(key *PluginKey, plaintext []byte) ([]byte, e
 func (ks *Server) decryptWithPlugin(key *PluginKey, ciphertext []byte) ([]byte, error) {
 	if !ks.EnablePlugins {
 		return nil, errPluginsDisabled
+	}
+	if len(ciphertext) > maxPluginWrappedBytes {
+		return nil, status.Errorf(codes.InvalidArgument, "plugin %q wrapped key exceeds %d bytes", key.BinaryName, maxPluginWrappedBytes)
 	}
 	config, err := pluginConfigFromJSON(key.BinaryName, key.Config)
 	if err != nil {
