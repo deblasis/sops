@@ -134,6 +134,16 @@ func TestStartupFailureIsFatalForKey(t *testing.T) {
 	assert.True(t, errors.Is(err, errStartupFailed), "got: %v", err)
 }
 
+func TestHandshakeCleanExitRespawnsWithinCap(t *testing.T) {
+	// exit 0 before any handshake byte is respawnable: never fatal, never
+	// counted, but bounded by the per-operation spawn cap
+	h := newTestHost(t, "clean_exit_startup")
+	_, err := h.do(context.Background(), request{Action: "encrypt", Plaintext: []byte("k")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "spawn attempts")
+	assert.Equal(t, 0, h.restarts, "clean exits never count against the budget")
+}
+
 func TestHandshakeTimeoutNamesPlugin(t *testing.T) {
 	h := newTestHost(t, "hang_startup")
 	start := time.Now()

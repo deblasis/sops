@@ -22,8 +22,9 @@ const (
 )
 
 var (
-	errStartupFailed  = errors.New("plugin failed during startup")
-	errVersionRefused = errors.New("plugin protocol version refused")
+	errStartupFailed      = errors.New("plugin failed during startup")
+	errVersionRefused     = errors.New("plugin protocol version refused")
+	errHandshakeCleanExit = errors.New("plugin exited cleanly before the handshake")
 )
 
 // host owns one plugin binary. Lockstep: a single outstanding request, so
@@ -96,6 +97,12 @@ func (h *host) start(ctx context.Context) error {
 	}
 	hs, err := h.readHandshake(ctx)
 	if err != nil {
+		// a clean exit (status 0) before any handshake byte is respawnable,
+		// same as a clean exit mid-session; every other handshake failure
+		// (garbage, timeout, non-zero exit) is fatal
+		if errors.Is(err, io.EOF) && h.exitedCleanly() {
+			return errHandshakeCleanExit
+		}
 		h.kill()
 		return err
 	}
@@ -155,6 +162,22 @@ func (h *host) readHandshake(ctx context.Context) (handshakeIn, error) {
 	return hs, nil
 }
 
+// exitedCleanly tears the child down and reports whether it had ALREADY
+// exited with status 0. A child still alive (or dead non-zero) reads as
+// unclean: only an observed clean EOF plus a zero exit status is respawnable.
+func (h *host) exitedCleanly() bool {
+	if h.cmd == nil || h.cmd.Process == nil {
+		return false
+	}
+	killTree(h.cmd)
+	if h.stdin != nil {
+		h.stdin.Close()
+	}
+	err := h.cmd.Wait()
+	h.cmd, h.stdin, h.stdout = nil, nil, nil
+	return err == nil
+}
+
 // do runs one lockstep request. Restart accounting:
 //   - clean exit (EOF, no partial line) before any response byte: respawn and
 //     resend WITHOUT counting; clean exits after complete responses likewise
@@ -179,6 +202,11 @@ func (h *host) do(ctx context.Context, req request) (*response, error) {
 					h.binaryName, h.restarts, h.stderrString())
 			}
 			if err := h.start(ctx); err != nil {
+				if errors.Is(err, errHandshakeCleanExit) {
+					// clean exit at the handshake: respawn within the spawn
+					// cap above, never counted against the restart budget
+					continue
+				}
 				return nil, err
 			}
 		}

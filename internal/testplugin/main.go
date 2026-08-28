@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -68,6 +68,9 @@ func main() {
 		os.Exit(2)
 	}
 	switch mode {
+	case "clean_exit_startup":
+		// exit 0 before any handshake byte: respawnable, not a startup failure
+		return
 	case "hang_startup":
 		// sleep before the handshake: exercises the host's handshake timeout
 		for {
