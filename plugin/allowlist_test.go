@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +41,8 @@ func TestNoAllowlistBlocksByDefault(t *testing.T) {
 	t.Setenv("SOPS_LOCAL_CONFIG", "")
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	// the binary resolves (the gate runs after resolution); only the gate blocks
+	prependPath(t, filepath.Dir(buildTestPlugin(t)))
 
 	k := NewMasterKey("testplugin", nil, 0, "")
 	err := k.Encrypt([]byte("datakey-0000000000000000"))
@@ -83,7 +86,26 @@ func TestBadLocalConfigErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing")
 
-	err = gateExecution("testplugin")
+	err = gateExecution("testplugin", "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "loading local plugin config")
+}
+
+// a path override is only executable when the allowlist names the resolved
+// absolute path; a bare name entry authorizes PATH resolution, never a
+// repo-chosen absolute path
+func TestOverrideAllowlistRequiresExactPath(t *testing.T) {
+	bin := buildTestPlugin(t)
+	t.Setenv("SOPS_TESTPLUGIN_MODE", "")
+
+	writeLocalConfig(t, "plugins:\n  allowed:\n    - testplugin\n")
+	k := NewMasterKey("testplugin", nil, 0, bin)
+	err := k.Encrypt([]byte("datakey-0000000000000000"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be allowlisted by absolute path")
+	assert.Contains(t, err.Error(), bin)
+
+	writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - %s\n", bin))
+	k2 := NewMasterKey("testplugin", nil, 0, bin)
+	require.NoError(t, k2.Encrypt([]byte("datakey-0000000000000000")))
 }

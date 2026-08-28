@@ -299,7 +299,14 @@ plugins:
   allowed:
     - myplugin
     - otherplugin
+    - /usr/local/lib/sops-plugins/sops-plugin-myplugin
 ```
+
+Entries are binary names (for PATH resolution) or absolute paths (for
+`path:` overrides). When a `path:` override is in play, the allowlist must
+contain the resolved absolute path EXACTLY: a name entry authorizes PATH
+resolution only and can never authorize an absolute path that repository
+content picked.
 
 Every spawn, for encryption and decryption alike, passes this gate. No
 allowlist, or an empty one, blocks every plugin: SOPS fails closed. A

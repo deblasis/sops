@@ -12,7 +12,7 @@ import (
 func newTestKey(t *testing.T, mode string) *MasterKey {
 	t.Helper()
 	bin := buildTestPlugin(t)
-	allowTestPlugin(t)
+	allowTestPlugin(t, bin)
 	t.Setenv("SOPS_TESTPLUGIN_MODE", mode)
 	return NewMasterKey("testplugin", map[string]any{"k": "v"}, 2*time.Second, bin)
 }

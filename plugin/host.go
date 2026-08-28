@@ -59,16 +59,17 @@ func (h *host) ResetBudget() {
 }
 
 func (h *host) start(ctx context.Context) error {
-	if !h.skipGate {
-		if err := gateExecution(h.binaryName); err != nil {
-			return err
-		}
-	}
 	path, err := resolvePlugin(h.binaryName, h.pathOverride)
 	if err != nil {
 		return err
 	}
 	h.resolvedPath = path
+	if !h.skipGate {
+		// gated after resolution: the override check needs the resolved path
+		if err := gateExecution(h.binaryName, h.resolvedPath, h.pathOverride); err != nil {
+			return err
+		}
+	}
 	cmd := exec.Command(path)
 	cmd.Env = os.Environ()
 	setChildAttrs(cmd)

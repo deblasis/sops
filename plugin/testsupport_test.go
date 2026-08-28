@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"fmt"
 	"os"
 	"testing"
 
@@ -20,8 +21,9 @@ func prependPath(t *testing.T, dir string) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
-// every spawn passes gateExecution; tests must allowlist the test binary
-func allowTestPlugin(t *testing.T) {
+// every spawn passes gateExecution; tests must allowlist the test binary.
+// bin is passed as a path override, so the exact path must be listed too.
+func allowTestPlugin(t *testing.T, bin string) {
 	t.Helper()
-	writeLocalConfig(t, "plugins:\n  allowed:\n    - testplugin\n")
+	writeLocalConfig(t, fmt.Sprintf("plugins:\n  allowed:\n    - testplugin\n    - %s\n", bin))
 }
