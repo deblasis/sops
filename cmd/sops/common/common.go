@@ -15,12 +15,14 @@ import (
 	"github.com/getsops/sops/v3/keys"
 	"github.com/getsops/sops/v3/keyservice"
 	"github.com/getsops/sops/v3/kms"
+	"github.com/getsops/sops/v3/plugin"
 	"github.com/getsops/sops/v3/stores/dotenv"
 	"github.com/getsops/sops/v3/stores/ini"
 	"github.com/getsops/sops/v3/stores/json"
 	"github.com/getsops/sops/v3/stores/yaml"
 	"github.com/getsops/sops/v3/version"
 	"github.com/mitchellh/go-wordwrap"
+	log "github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
 	"golang.org/x/term"
 )
@@ -235,6 +237,35 @@ func GetKMSKeyWithEncryptionCtx(tree *sops.Tree) (keyGroupIndex int, keyIndex in
 		}
 	}
 	return 0, 0, nil
+}
+
+// WarnDroppedPluginKeys warns at decrypt time when the creation rule matching
+// the file carries plugin keys but the file's metadata has none. A sops binary
+// from before plugin support drops the plugin key array when it re-saves a
+// file; updatekeys is the repair. A rule that merely gained plugin keys after
+// the file was encrypted trips the same warning, with the same correct advice.
+func WarnDroppedPluginKeys(conf *config.Config, tree *sops.Tree) {
+	if conf == nil || !keyGroupsHavePluginKeys(conf.KeyGroups) {
+		return
+	}
+	if keyGroupsHavePluginKeys(tree.Metadata.KeyGroups) {
+		return
+	}
+	log.Warnf("File %s does not contain plugin keys, but the creation rule matching it does: "+
+		"it was likely re-saved by a version of sops without plugin support, which silently drops "+
+		"plugin keys from metadata. Run `sops updatekeys` on the file to restore them.",
+		tree.FilePath)
+}
+
+func keyGroupsHavePluginKeys(groups []sops.KeyGroup) bool {
+	for _, group := range groups {
+		for _, k := range group {
+			if _, ok := k.(*plugin.MasterKey); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // GenericDecryptOpts represents decryption options and config

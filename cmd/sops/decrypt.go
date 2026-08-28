@@ -7,6 +7,7 @@ import (
 	"github.com/getsops/sops/v3"
 	"github.com/getsops/sops/v3/cmd/sops/codes"
 	"github.com/getsops/sops/v3/cmd/sops/common"
+	"github.com/getsops/sops/v3/config"
 	"github.com/getsops/sops/v3/keyservice"
 	"github.com/getsops/sops/v3/stores/json"
 )
@@ -38,6 +39,7 @@ func decryptTree(opts decryptOpts) (tree *sops.Tree, err error) {
 	if err != nil {
 		return nil, err
 	}
+	warnDroppedPluginKeys(opts.InputPath, tree)
 
 	_, err = common.DecryptTree(common.DecryptTreeOpts{
 		Cipher:          opts.Cipher,
@@ -51,6 +53,21 @@ func decryptTree(opts decryptOpts) (tree *sops.Tree, err error) {
 	}
 
 	return tree, nil
+}
+
+// warnDroppedPluginKeys diagnoses a pre-plugin sops re-save at decrypt time.
+// Decrypt loads no creation rule of its own, so the lookup is best-effort:
+// a missing config or an unmatched rule must never fail a decrypt.
+func warnDroppedPluginKeys(path string, tree *sops.Tree) {
+	configPath, err := findConfigFile()
+	if err != nil {
+		return
+	}
+	conf, err := config.LoadCreationRuleForFile(configPath, path, nil)
+	if err != nil {
+		return
+	}
+	common.WarnDroppedPluginKeys(conf, tree)
 }
 
 func decrypt(opts decryptOpts) (decryptedFile []byte, err error) {
