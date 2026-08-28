@@ -12,8 +12,9 @@ import (
 // content is untrusted for executable selection.
 type LocalConfig struct {
 	Plugins struct {
-		Allowed []string `yaml:"allowed"`
-		Timeout string   `yaml:"timeout"`
+		Allowed []string          `yaml:"allowed"`
+		Pinned  map[string]string `yaml:"pinned"`
+		Timeout string            `yaml:"timeout"`
 	} `yaml:"plugins"`
 }
 

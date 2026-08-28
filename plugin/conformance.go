@@ -19,8 +19,8 @@ const (
 	probeLen           = 32
 )
 
-// semver-ish: v-prefixed dotted numbers, at least one digit
-var semverishRe = regexp.MustCompile(`^[vV]?\d+(\.\d+){0,3}`)
+// semver-ish: v-prefixed dotted numbers, at least one digit, whole string
+var semverishRe = regexp.MustCompile(`^[vV]?\d+(\.\d+){0,3}$`)
 
 type ConformanceResult struct {
 	Name   string
