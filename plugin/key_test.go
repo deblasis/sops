@@ -2,12 +2,28 @@ package plugin
 
 import (
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type captureHook struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (h *captureHook) Levels() []logrus.Level { return logrus.AllLevels }
+func (h *captureHook) Fire(e *logrus.Entry) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.entries = append(h.entries, e.Message)
+	return nil
+}
 
 func newTestKey(t *testing.T, mode string) *MasterKey {
 	t.Helper()
@@ -162,4 +178,31 @@ func TestEncryptCapturesHostVersion(t *testing.T) {
 	k := newTestKey(t, "")
 	require.NoError(t, k.Encrypt([]byte("datakey-0000000000000000")))
 	assert.Equal(t, "1.2.3", k.PluginVersion)
+}
+
+// stderr from an otherwise-successful operation must reach the user's log,
+// not only budget-exhaustion errors
+func TestStderrSurfacedAtWarnAfterCompletedOps(t *testing.T) {
+	hook := &captureHook{}
+	logger := logrus.StandardLogger()
+	prev := logger.ReplaceHooks(map[logrus.Level][]logrus.Hook{
+		logrus.WarnLevel: {hook},
+	})
+	defer logger.ReplaceHooks(prev)
+
+	k := newTestKey(t, "stderrnoise")
+	require.NoError(t, k.Encrypt([]byte("datakey-0000000000000000")))
+	_, err := k.Decrypt()
+	require.NoError(t, err)
+
+	hook.mu.Lock()
+	defer hook.mu.Unlock()
+	var warned []string
+	for _, m := range hook.entries {
+		if strings.HasPrefix(m, "plugin testplugin stderr:") {
+			warned = append(warned, m)
+		}
+	}
+	require.Len(t, warned, 2, "one warn per completed operation: %v", hook.entries)
+	assert.Contains(t, warned[0], "running in fake mode")
 }

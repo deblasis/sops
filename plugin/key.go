@@ -6,7 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	"github.com/getsops/sops/v3/keys"
 )
@@ -96,6 +99,7 @@ func (k *MasterKey) Encrypt(dataKey []byte) error {
 	if err != nil {
 		return err
 	}
+	logStderr(k.BinaryName, h)
 	if err := k.answerError("encrypt", resp); err != nil {
 		return err
 	}
@@ -120,6 +124,7 @@ func (k *MasterKey) Decrypt() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	logStderr(k.BinaryName, h)
 	if err := k.answerError("decrypt", resp); err != nil {
 		return nil, err
 	}
@@ -148,6 +153,24 @@ func (k *MasterKey) answerError(action string, resp *response) error {
 			k.BinaryName, action, resp.Error.Code, resp.Error.Message)
 	}
 	return fmt.Errorf("plugin %s: %s: %w", k.BinaryName, action, resp.Error)
+}
+
+// stderrLogLimit keeps the surfaced stderr readable without spilling a chatty
+// child's whole buffer into the log
+const stderrLogLimit = 1024
+
+// logStderr surfaces a completed operation's captured stderr. Warnings a
+// plugin prints while otherwise succeeding (fake-mode notices, deprecations)
+// used to be visible only on budget exhaustion.
+func logStderr(binaryName string, h *host) {
+	s := strings.TrimSpace(h.stderrString())
+	if s == "" {
+		return
+	}
+	if len(s) > stderrLogLimit {
+		s = s[:stderrLogLimit] + "...[truncated]"
+	}
+	log.Warnf("plugin %s stderr: %s", binaryName, s)
 }
 
 func (k *MasterKey) timeoutOr() time.Duration {

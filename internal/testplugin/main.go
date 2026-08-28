@@ -49,7 +49,7 @@ type respErr struct {
 func main() {
 	mode := os.Getenv("SOPS_TESTPLUGIN_MODE")
 	switch mode {
-	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread":
+	case "", "version_high", "garbage", "unsolicited", "wrongid", "oversized", "never", "authfail", "exit1_startup", "unflushed", "oneshot", "hang_startup", "echo", "requireconfig", "bare_false", "incomplete_err", "ok_with_err", "clean_exit_startup", "noread", "stderrnoise":
 	default:
 		// a typo must never silently become a healthy plugin
 		fmt.Fprintf(os.Stderr, "unknown SOPS_TESTPLUGIN_MODE: %s\n", mode)
@@ -86,6 +86,10 @@ func main() {
 		return
 	}
 	writeJSON(out, hsOut{Protocol: "sops-plugin", Version: 1, Plugin: "testplugin", PluginVersion: "1.2.3"})
+	if mode == "stderrnoise" {
+		// healthy session plus a stderr warning the host must surface
+		fmt.Fprintln(os.Stderr, "running in fake mode")
+	}
 	if mode == "noread" {
 		// handshake done, then never read stdin again: the host's request
 		// write must hit its deadline, not block forever on a full pipe
